@@ -1,0 +1,321 @@
+import {
+  awardRuleSchema,
+  candidateListSchema,
+  shiftSchema,
+  timesheetSchema,
+} from '@wfm/contracts';
+import type { AnyWfmEvent } from '@wfm/contracts';
+import { ChatOpenAI } from '@langchain/openai';
+import {
+  candidateChoiceOutputSchema,
+  timesheetAdjustmentOutputSchema,
+  type AiDecisionNode,
+  type CandidateChoiceOutput,
+  type TimesheetAdjustmentOutput,
+} from '@wfm/workflows';
+import { z } from 'zod';
+import { EnginePermanentError } from '../errors.ts';
+
+/**
+ * The proposer port (ADR-0006): the model proposes, policy constrains, and a
+ * human decides. Two implementations share one output shape per `output` kind:
+ * `LlmProposer` when OPENAI_API_KEY is configured, `RulesProposer` always
+ * (deterministic; the CI default).
+ */
+
+export const coveragePlanOutputSchema = z.object({
+  employeeIds: z.array(z.uuid()).min(1),
+  topCandidateId: z.uuid(),
+  expiresAt: z.iso.datetime({ offset: true }),
+  costDeltaCents: z.int(),
+  rationale: z.string().min(1),
+  evidence: z.array(z.object({ label: z.string().min(1), value: z.string().min(1) })).min(1),
+});
+
+export type CoveragePlanOutput = z.infer<typeof coveragePlanOutputSchema>;
+
+export type ProposalOutputShape = CandidateChoiceOutput | TimesheetAdjustmentOutput | CoveragePlanOutput;
+
+export interface ProposerInput {
+  node: AiDecisionNode;
+  event: AnyWfmEvent;
+  /** Tool outputs keyed by tool id; only the node's declared tools are present. */
+  data: Record<string, unknown>;
+}
+
+export interface ProposerResult {
+  output: ProposalOutput;
+  rationale: string;
+  evidence: Array<{ label: string; value: string }>;
+  proposer: 'llm' | 'rules';
+  model?: string;
+  promptVersion?: string;
+}
+
+export interface Proposer {
+  propose: (input: ProposerInput) => Promise<ProposerResult>;
+}
+
+export class ProposerError extends EnginePermanentError {
+  override readonly name = 'ProposerError';
+}
+
+const PROMPT_VERSION = 'v1';
+
+/**
+ * Deterministic ranking/adjustment over the fetched tool data. No model, no
+ * randomness; the same inputs always yield the same proposal.
+ */
+export class RulesProposer implements Proposer {
+  async propose(input: ProposerInput): Promise<ProposerResult> {
+    const { node, event, data } = input;
+    switch (node.config.output) {
+      case 'candidate_choice':
+        return this.proposeCandidateChoice(node, event, data);
+      case 'timesheet_adjustment':
+        return this.proposeTimesheetAdjustment(node, event, data);
+      case 'coverage_plan':
+        return this.proposeCoveragePlan(node, event, data);
+    }
+  }
+
+  #eligibleFrom(candidates: z.infer<typeof candidateListSchema>['candidates']): typeof candidates {
+    return candidates.filter((candidate) => candidate.meetsRestRule && candidate.overtimeRisk !== 'high');
+  }
+
+  async #candidatesData(data: Record<string, unknown>): Promise<z.infer<typeof candidateListSchema>> {
+    const candidates = candidateListSchema.safeParse(data['shift.candidates']);
+    if (!candidates.success || candidates.data.candidates.length === 0) {
+      throw new ProposerError('rules proposer needs a non-empty candidate list from the shift.candidates tool');
+    }
+    return candidates.data;
+  }
+
+  async #shiftData(data: Record<string, unknown>): Promise<z.infer<typeof shiftSchema>> {
+    const shift = shiftSchema.safeParse(data['shift.get']);
+    if (!shift.success) throw new ProposerError('rules proposer requires the shift.get tool data');
+    return shift.data;
+  }
+
+  async proposeCandidateChoice(
+    node: AiDecisionNode,
+    event: AnyWfmEvent,
+    data: Record<string, unknown>,
+  ): Promise<ProposerResult> {
+    const shift = await this.#shiftData(data);
+    const candidates = await this.#candidatesData(data);
+    const eligible = this.#eligibleFrom(candidates.candidates);
+    if (eligible.length === 0) {
+      throw new ProposerError(
+        `no eligible candidate for shift ${shift.shiftId}: everyone on the list fails the rest rule or the overtime policy`,
+      );
+    }
+    const ranked = [...eligible].sort(
+      (a, b) => a.costDeltaVsBaselineCents - b.costDeltaVsBaselineCents || b.score - a.score,
+    );
+    const chosen = ranked.slice(0, Math.min(3, ranked.length));
+    const top = chosen[0];
+    if (!top) throw new ProposerError('candidate ranking produced no top candidate');
+
+    const output: CandidateChoiceOutput = {
+      employeeIds: chosen.map((candidate) => candidate.employeeId),
+      topCandidateId: top.employeeId,
+      costDeltaCents: top.costDeltaVsBaselineCents,
+      rationale:
+        `Ranked by lowest cost delta against baseline, then service score; ` +
+        `${top.employeeName} is the top pick at ${top.hourlyRateCents}c/h ` +
+        `(rest ${top.restHoursBeforeShift}h before shift, overtime risk ${top.overtimeRisk}).`,
+      evidence: [
+        { label: 'Shift', value: `${shift.roleName} at ${shift.locationName}` },
+        { label: 'Trigger', value: event.eventType },
+        {
+          label: 'Eligible candidates',
+          value: `${eligible.length} of ${candidates.candidates.length} pass rest rule and overtime policy`,
+        },
+        {
+          label: 'Top candidate',
+          value: `${top.employeeName} — cost delta ${top.costDeltaVsBaselineCents}c, score ${top.score}`,
+        },
+        ...top.reasons.map((reason, index) => ({ label: `Reason ${index + 1}`, value: reason })),
+      ],
+    };
+    return {
+      output,
+      rationale: output.rationale,
+      evidence: output.evidence,
+      proposer: 'rules',
+      promptVersion: PROMPT_VERSION,
+    };
+  }
+
+  async proposeTimesheetAdjustment(
+    node: AiDecisionNode,
+    event: AnyWfmEvent,
+    data: Record<string, unknown>,
+  ): Promise<ProposerResult> {
+    const detail = z.object({ timesheet: timesheetSchema, awardRule: awardRuleSchema }).safeParse(data['timesheet.get']);
+    if (!detail.success) throw new ProposerError('rules proposer requires the timesheet.get tool data');
+    const { timesheet, awardRule } = detail.data;
+
+    const unpaidBreakTaken = timesheet.breaks
+      .filter((breakRecord) => breakRecord.type === 'unpaid')
+      .reduce((total, breakRecord) => total + breakRecord.minutes, 0);
+    const shortfall = Math.max(0, awardRule.unpaidBreakMinutes - unpaidBreakTaken);
+
+    const exception = timesheet.exceptions.find((candidate) => candidate.status === 'open');
+    const overtimeMinutes = exception?.overtimeMinutes ?? 0;
+    // A missed break means the unpaid break was never recorded; adding it back
+    // removes the matching overstatement from the overtime the raw clock data
+    // implied.
+    const overtimeMinutesDelta = exception?.type === 'missed_break' ? -overtimeMinutes : 0;
+
+    const ordinaryLine = timesheet.payLines.find((line) => line.multiplier === 1);
+    const rateCents = ordinaryLine?.rateCents ?? (timesheet.paidMinutes > 0
+      ? Math.round(timesheet.totalPayCents / timesheet.paidMinutes)
+      : 0);
+    const ratePerMinute = rateCents / 60;
+    const payImpactCents = -(
+      Math.round(shortfall * ratePerMinute) +
+      Math.round(Math.abs(overtimeMinutesDelta) * ratePerMinute * (awardRule.overtimeMultiplier - 1))
+    );
+
+    const output: TimesheetAdjustmentOutput = {
+      unpaidBreakMinutesDelta: shortfall,
+      overtimeMinutesDelta: overtimeMinutesDelta,
+      payImpactCents,
+      awardRuleCode: awardRule.ruleCode,
+      rationale:
+        `Award ${awardRule.ruleCode} requires a ${awardRule.unpaidBreakMinutes} minute unpaid break after ` +
+        `${awardRule.breakRequiredAfterMinutes} minutes of work; ${unpaidBreakTaken} recorded. Restoring the ` +
+        `${shortfall} minute break and removing ${Math.abs(overtimeMinutesDelta)} overstated overtime minutes.`,
+      evidence: [
+        { label: 'Award rule', value: awardRule.ruleCode },
+        { label: 'Required unpaid break', value: `${awardRule.unpaidBreakMinutes} minutes` },
+        { label: 'Unpaid break taken', value: `${unpaidBreakTaken} minutes` },
+        { label: 'Recorded overtime', value: `${timesheet.overtimeMinutes} minutes` },
+        { label: 'Estimated pay impact', value: `${payImpactCents} cents` },
+      ],
+    };
+    return {
+      output,
+      rationale: output.rationale,
+      evidence: output.evidence,
+      proposer: 'rules',
+      promptVersion: PROMPT_VERSION,
+    };
+  }
+
+  async proposeCoveragePlan(
+    node: AiDecisionNode,
+    event: AnyWfmEvent,
+    data: Record<string, unknown>,
+  ): Promise<ProposerResult> {
+    const candidates = await this.#candidatesData(data);
+    const eligible = this.#eligibleFrom(candidates.candidates);
+    if (eligible.length === 0) throw new ProposerError('no eligible candidate for a coverage plan');
+    const ranked = [...eligible].sort(
+      (a, b) => a.costDeltaVsBaselineCents - b.costDeltaVsBaselineCents || b.score - a.score,
+    );
+    const chosen = ranked.slice(0, Math.min(3, ranked.length));
+    const top = chosen[0];
+    if (!top) throw new ProposerError('coverage plan ranking produced no top candidate');
+    const output: CoveragePlanOutput = {
+      employeeIds: chosen.map((candidate) => candidate.employeeId),
+      topCandidateId: top.employeeId,
+      expiresAt: new Date(Date.now() + 4 * 60 * 60_000).toISOString(),
+      costDeltaCents: top.costDeltaVsBaselineCents,
+      rationale: `Coverage plan offering to ${chosen.length} ranked employees, ${top.employeeName} first.`,
+      evidence: [
+        { label: 'Top candidate', value: `${top.employeeName} (cost delta ${top.costDeltaVsBaselineCents} cents)` },
+        { label: 'Trigger', value: event.eventType },
+      ],
+    };
+    return { output, rationale: output.rationale, evidence: output.evidence, proposer: 'rules', promptVersion: PROMPT_VERSION };
+  }
+}
+
+const OUTPUT_SCHEMAS: Record<AiDecisionNode['config']['output'], z.ZodType> = {
+  candidate_choice: candidateChoiceOutputSchema,
+  timesheet_adjustment: timesheetAdjustmentOutputSchema,
+  coverage_plan: coveragePlanOutputSchema,
+};
+
+/**
+ * Structured-output proposer. Used only when OPENAI_API_KEY is set; its output
+ * is validated against the same schemas as the rules proposer and ineligible
+ * employees are filtered out — the model is never authoritative.
+ */
+export class LlmProposer implements Proposer {
+  readonly #model: ChatOpenAI;
+  readonly #modelName: string;
+
+  constructor(env: { OPENAI_API_KEY: string; OPENAI_MODEL?: string; LLM_TIMEOUT_MS?: string }) {
+    this.#modelName = env.OPENAI_MODEL ?? 'gpt-5.1';
+    this.#model = new ChatOpenAI({
+      apiKey: env.OPENAI_API_KEY,
+      model: this.#modelName,
+      timeout: env.LLM_TIMEOUT_MS ? Number(env.LLM_TIMEOUT_MS) : 20_000,
+    });
+  }
+
+  async propose(input: ProposerInput): Promise<ProposerResult> {
+    const { node, event, data } = input;
+    const schema = OUTPUT_SCHEMAS[node.config.output];
+    const structured = this.#model.withStructuredOutput(schema);
+    const prompt = [
+      `Goal: ${node.config.goal}`,
+      `Trigger event: ${JSON.stringify(event)}`,
+      `Tool data: ${JSON.stringify(data)}`,
+      'Respond with the structured output. Justify the decision with rationale and evidence entries.',
+    ].join('\n\n');
+
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const raw: unknown = await structured.invoke(prompt);
+        const validated = schema.safeParse(raw);
+        if (!validated.success) {
+          throw new ProposerError(
+            `llm proposal failed schema validation: ${validated.error.issues.map((issue) => issue.path.join('.')).join(', ')}`,
+          );
+        }
+        const result = this.#withoutIneligible(validated.data as ProposalOutput, input);
+        return {
+          output: result,
+          rationale: result.rationale,
+          evidence: result.evidence,
+          proposer: 'llm',
+          model: this.#modelName,
+          promptVersion: PROMPT_VERSION,
+        };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof ProposerError
+      ? lastError
+      : new ProposerError(`llm proposer failed after retry: ${String(lastError)}`);
+  }
+
+  #withoutIneligible(result: ProposalOutput, input: ProposerInput): ProposalOutput {
+    if (!('employeeIds' in result)) return result;
+    const candidates = candidateListSchema.safeParse(input.data['shift.candidates']);
+    if (!candidates.success) return result;
+    const eligible = new Set(
+      candidates.data.candidates
+        .filter((candidate) => candidate.meetsRestRule && candidate.overtimeRisk !== 'high')
+        .map((candidate) => candidate.employeeId),
+    );
+    const filtered = result.employeeIds.filter((employeeId) => eligible.has(employeeId));
+    const firstEligible = filtered[0];
+    if (!firstEligible) {
+      throw new ProposerError('llm proposal contained no eligible employee after policy filtering');
+    }
+    const topCandidateId = eligible.has(result.topCandidateId) ? result.topCandidateId : firstEligible;
+    return { ...result, employeeIds: filtered, topCandidateId };
+  }
+}
+
+export function createProposer(env: { OPENAI_API_KEY?: string; OPENAI_MODEL?: string; LLM_TIMEOUT_MS?: string }): Proposer {
+  return env.OPENAI_API_KEY ? new LlmProposer(env) : new RulesProposer();
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@wfm/eventbus",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@wfm/contracts": "workspace:*",
+    "ioredis": "^5.8.1"
+  }
+}

@@ -1,0 +1,14 @@
+ts	phase	decision	why	evidence	result
+2026-09-20T00:00:00Z	frame	built two domain services plus an engine rather than one service	the value is the boundary between services that own state and an engine that only proposes	docs/design.md	accepted by reviewer
+2026-09-20T00:00:00Z	frame	workflows are data, not code	the ask is a builder where customers compose workflows, so the engine has to compile a saved definition	packages/workflows/src/dsl.ts	green tests
+2026-09-20T00:00:00Z	frame	enforced platform invariants in the validator	user-authored automation that can move pay without a human is the failure mode worth designing out	packages/workflows/src/validate.ts, tests	30 tests pass
+2026-09-20T00:00:00Z	frame	Bun plus Elysia plus Eden on Postgres	Drizzle keeps the runtime free of native binaries and Eden gives the UI the server's types	docs/adr/0001-bun-runtime.md, docs/adr/0002-elysia-eden-typed-boundaries.md	typecheck clean
+2026-09-20T00:00:00Z	frame	event backbone behind a port, Redis Streams locally	one broker for the demo while keeping consumer groups, replay, and per-tenant ordering	docs/adr/0004-event-backbone.md	pending e2e
+2026-09-20T00:00:00Z	frame	BullMQ for execution and LangGraph for the graph	approval latency must not depend on worker lifetime, and retries and DLQ stay ours	docs/adr/0005-bullmq-langgraph-split.md	pending e2e
+2026-09-20T00:00:00Z	frame	transactional outbox with skinny events	avoids the dual-write bug and matches the skinny webhooks Humanforce HR already emits	docs/adr/0007-outbox-skinny-idempotent.md	pending e2e
+2026-09-20T00:00:00Z	harness	wrote contracts and the DSL before any service	the five build slices compile against one interface instead of negotiating	packages/contracts/src/index.ts, packages/workflows/src/index.ts	30 tests pass
+2026-09-20T00:00:00Z	harness	canvas geometry stored as layout beside the DSL	React Flow positions are UI metadata and must not leak into the executable definition	services/studio-api/src/db/schema.ts	implemented
+2026-09-20T01:10:00Z	harness	proved the outbox and the Redis backbone against real infra	these carry the at-least-once and dedupe claims, so they cannot rest on a mock	packages/outbox/tests/outbox.test.ts, packages/eventbus/tests/redis-bus.test.ts	37 tests pass
+2026-09-20T01:20:00Z	harness	studio migrations as plain SQL applied by a tracked migrator	a reviewer can read the schema in a diff and a rerun is a no-op	services/studio-api/drizzle/0001_studio.sql	9 tables created
+2026-09-20T01:25:00Z	harness	env files symlinked into each workspace	bun and next read .env from their own cwd, and one source of truth beats four	services/*/.env, apps/studio-web/.env	env resolves in service cwd
+2026-09-20T01:30:00Z	design	workflows became a DSL with a validator and a compiler	the approved ask is a drag-and-drop builder, which needs definitions the engine compiles	packages/workflows/src/validate.ts, compile.ts	green

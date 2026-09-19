@@ -1,0 +1,148 @@
+import { pgTable, integer, jsonb, text, timestamp, uuid, bigserial, boolean, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import type { CanvasLayout, Diagnostic, WorkflowDefinition } from '@wfm/workflows';
+
+/**
+ * Studio persistence. Workflow definitions are versioned and immutable once
+ * published; a run pins the version it started with so a run in flight never
+ * changes shape because someone edited the workflow (design.md §7).
+ */
+
+export const workflows = pgTable(
+  'workflows',
+  {
+    workflowId: uuid('workflow_id').primaryKey(),
+    tenantId: uuid('tenant_id').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    enabled: boolean('enabled').notNull().default(true),
+    draftVersionNumber: integer('draft_version_number').notNull().default(1),
+    publishedVersionNumber: integer('published_version_number'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('workflows_tenant_idx').on(table.tenantId)],
+);
+
+export const workflowVersions = pgTable(
+  'workflow_versions',
+  {
+    versionId: uuid('version_id').primaryKey(),
+    workflowId: uuid('workflow_id').notNull(),
+    tenantId: uuid('tenant_id').notNull(),
+    versionNumber: integer('version_number').notNull(),
+    status: text('status', { enum: ['draft', 'published'] }).notNull(),
+    definition: jsonb('definition').$type<WorkflowDefinition>().notNull(),
+    layout: jsonb('layout').$type<CanvasLayout>().notNull(),
+    diagnostics: jsonb('diagnostics').$type<Diagnostic[]>().notNull().default([]),
+    createdBy: text('created_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('workflow_versions_unique').on(table.workflowId, table.versionNumber),
+    index('workflow_versions_tenant_idx').on(table.tenantId),
+  ],
+);
+
+export const runs = pgTable(
+  'runs',
+  {
+    runId: uuid('run_id').primaryKey(),
+    tenantId: uuid('tenant_id').notNull(),
+    workflowId: uuid('workflow_id').notNull(),
+    workflowVersionId: uuid('workflow_version_id').notNull(),
+    workflowName: text('workflow_name').notNull(),
+    triggerEventId: uuid('trigger_event_id').notNull(),
+    triggerEventType: text('trigger_event_type').notNull(),
+    status: text('status', {
+      enum: ['queued', 'running', 'awaiting_approval', 'succeeded', 'failed', 'cancelled'],
+    }).notNull(),
+    correlationId: uuid('correlation_id').notNull(),
+    dryRun: boolean('dry_run').notNull().default(false),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    actionsExecuted: integer('actions_executed').notNull().default(0),
+    summary: text('summary'),
+    error: text('error'),
+  },
+  (table) => [
+    uniqueIndex('runs_workflow_event_unique').on(table.workflowId, table.triggerEventId),
+    index('runs_status_idx').on(table.status),
+    index('runs_tenant_idx').on(table.tenantId),
+  ],
+);
+
+export const runEvents = pgTable(
+  'run_events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    runId: uuid('run_id').notNull(),
+    seq: integer('seq').notNull(),
+    at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+    kind: text('kind').notNull(),
+    nodeId: text('node_id'),
+    title: text('title').notNull(),
+    detail: text('detail').notNull().default(''),
+    data: jsonb('data'),
+  },
+  (table) => [uniqueIndex('run_events_seq_unique').on(table.runId, table.seq)],
+);
+
+export const approvals = pgTable(
+  'approvals',
+  {
+    approvalId: uuid('approval_id').primaryKey(),
+    runId: uuid('run_id').notNull(),
+    tenantId: uuid('tenant_id').notNull(),
+    workflowId: uuid('workflow_id').notNull(),
+    nodeId: text('node_id').notNull(),
+    status: text('status', { enum: ['pending', 'approved', 'rejected', 'timed_out'] }).notNull(),
+    subject: text('subject').notNull(),
+    requestedFromRole: text('requested_from_role').notNull(),
+    escalateTo: text('escalate_to').notNull(),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    payImpactCents: integer('pay_impact_cents').notNull().default(0),
+    proposal: jsonb('proposal').notNull(),
+    decidedBy: text('decided_by'),
+    decisionReason: text('decision_reason'),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+  },
+  (table) => [index('approvals_status_idx').on(table.status), index('approvals_run_idx').on(table.runId)],
+);
+
+/** One row per (event, consumer): the dedupe ledger for at-least-once delivery. */
+export const processedEvents = pgTable(
+  'processed_events',
+  {
+    eventId: uuid('event_id').notNull(),
+    consumer: text('consumer').notNull(),
+    processedAt: timestamp('processed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('processed_events_unique').on(table.eventId, table.consumer)],
+);
+
+export const deadLetters = pgTable('dead_letters', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  tenantId: uuid('tenant_id'),
+  eventType: text('event_type'),
+  reason: text('reason').notNull(),
+  raw: text('raw').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Append-only. Nothing in the engine updates or deletes a row here. */
+export const auditLog = pgTable(
+  'audit_log',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    tenantId: uuid('tenant_id').notNull(),
+    runId: uuid('run_id'),
+    workflowId: uuid('workflow_id'),
+    nodeId: text('node_id'),
+    action: text('action').notNull(),
+    actor: text('actor').notNull(),
+    detail: jsonb('detail').notNull(),
+    at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('audit_run_idx').on(table.runId)],
+);

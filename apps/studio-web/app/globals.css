@@ -1,0 +1,79 @@
+@import 'tailwindcss';
+
+/**
+ * Palette: dark-first ops console with a cool neutral base and a violet/indigo
+ * accent for AI. Node accents match @wfm/workflows nodePalette so a node's
+ * colour on the canvas means the same thing everywhere it appears.
+ */
+@theme {
+  --color-canvas: oklch(0.16 0.014 265);
+  --color-canvas-grid: oklch(0.24 0.014 265);
+  --color-surface: oklch(0.2 0.014 265);
+  --color-surface-raised: oklch(0.24 0.016 265);
+  --color-border-subtle: oklch(0.3 0.016 265);
+  --color-ink: oklch(0.97 0.005 265);
+  --color-ink-muted: oklch(0.72 0.014 265);
+  --color-ink-faint: oklch(0.56 0.014 265);
+
+  --color-primary: oklch(0.66 0.19 285);
+  --color-primary-soft: oklch(0.32 0.09 285);
+  --color-success: oklch(0.72 0.15 155);
+  --color-success-soft: oklch(0.28 0.06 155);
+  --color-warning: oklch(0.79 0.15 80);
+  --color-warning-soft: oklch(0.3 0.06 80);
+  --color-danger: oklch(0.68 0.19 20);
+  --color-danger-soft: oklch(0.3 0.08 20);
+
+  --color-node-trigger: oklch(0.79 0.15 80);
+  --color-node-condition: oklch(0.74 0.13 235);
+  --color-node-ai: oklch(0.68 0.18 300);
+  --color-node-policy: oklch(0.74 0.15 160);
+  --color-node-approval: oklch(0.7 0.17 10);
+  --color-node-action: oklch(0.75 0.16 55);
+  --color-node-end: oklch(0.66 0.02 265);
+
+  --radius-card: 0.75rem;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-feature-settings: 'cv11', 'ss01';
+}
+
+/* React Flow needs its chrome re-skinned to match the console. */
+.react-flow__background {
+  background-color: var(--color-canvas);
+}
+.react-flow__edge-path {
+  stroke: var(--color-border-subtle);
+  stroke-width: 1.5;
+}
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--color-primary);
+}
+.react-flow__handle {
+  background: var(--color-border-subtle);
+  border: none;
+  width: 8px;
+  height: 8px;
+}
+.react-flow__controls-button {
+  background: var(--color-surface-raised);
+  border-bottom: 1px solid var(--color-border-subtle);
+  fill: var(--color-ink);
+}
+.react-flow__attribution {
+  display: none;
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@wfm/time-attendance-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./app": "./src/app.ts"
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "db:migrate": "bun src/db/migrate.ts"
+  },
+  "dependencies": {
+    "@elysiajs/cors": "^1.4.0",
+    "@wfm/contracts": "workspace:*",
+    "@wfm/eventbus": "workspace:*",
+    "@wfm/observability": "workspace:*",
+    "@wfm/outbox": "workspace:*",
+    "drizzle-orm": "^0.44.5",
+    "elysia": "^1.4.10",
+    "pino": "^9.13.1",
+    "postgres": "^3.4.7",
+    "zod": "^4.1.11"
+  }
+}

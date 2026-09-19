@@ -1,0 +1,296 @@
+# WFM Automation Studio — design brief
+
+**Status:** accepted for implementation · **Owner:** Chandra Teja Doredla · **Audience:** Humanforce engineering (Automation & AI team)
+
+## 1. Why this exists
+
+Humanforce runs a large estate of workforce-management microservices (rostering, time & attendance,
+awards, payroll, HR, talent). Those services emit state changes — a shift is cancelled, a break is
+missed, a timesheet crosses into overtime — and those changes are the raw material for the
+*Automation & AI* platform: a place where customers compose their own workflows over platform events,
+with AI doing the reasoning and humans keeping the authority over anything that touches pay,
+compliance, or a person's roster.
+
+This repository is a working slice of that platform, built end to end:
+
+1. Two user-facing domain services modelled on real Humanforce surfaces (rostering; time &
+   attendance with award compliance), each publishing domain events through a transactional outbox.
+2. An event backbone (port + adapters; Azure Event Hubs in production).
+3. **Automation Studio** — a trigger catalogue, a durable run orchestrator, a LangGraph.js agent graph
+   with human-in-the-loop interrupts and resumption, approvals, audit, and evaluation hooks.
+4. A Next.js studio UI where a customer sees triggers, composes a workflow, watches a run's reasoning
+   trail, and approves or rejects the step that needs a human.
+
+The point of the shape is the boundary: **AI proposes, deterministic policy constrains, humans decide,
+the domain services own the write.** Nothing in the agent path can mutate pay or a roster directly.
+
+## 2. Non-goals
+
+- Not a Humanforce product, integration, or a claim of affiliation. Domain names, event names, and
+  record shapes mirror their public API surface so the demo reads as a real fit.
+- No real customer data, no real payroll, no production Azure deployment in this repo.
+- Not an auth product: demo-safe actor headers stand in for OIDC + tenant-scoped RBAC (see ADR-0008).
+
+## 3. Grounding in the real product surface
+
+| Humanforce reality (verified) | Where it shows up here |
+|---|---|
+| WFM REST API resources: `rosterItems`, `shiftTypes`, `timesheets`, `timesheetBreaks`, `clocking/clockin|clockout`, `awardprofiles`, `payRuns`, `availability`, `employees/qualifications` | Domain model of the two services |
+| HR suite already emits **skinny webhooks** per tenant (`{id, event, timestamp, links:{self}}`, slugs like `person.created`, `job.update_scheduled`, `user.disabled_upcoming`) | Event envelope keeps identity, not truth: payload carries ids + facts that are true at emit time, and the engine fetches current state |
+| WFM REST API exposes **no** event surface (pull-only) | The gap this platform fills; services gain an outbox + event publication |
+| Humanforce Connect: "post once, route automatically", internal-fill-first then marketplace/agency | Coverage-rescue workflow cascade |
+| Award compliance & payroll-ready timesheets marketing (120+ awards, "100% payrun-ready") | Payroll-safe exception workflow and its guardrails |
+| SOC 2 / ISO 27001 posture, multi-tenant SaaS | Tenant scoping on every row, event, run, and approval; append-only audit |
+
+## 4. System context
+
+```mermaid
+flowchart LR
+  subgraph Services["Domain services (Elysia · Bun)"]
+    R["rostering-service"]
+    T["time-attendance-service"]
+  end
+  subgraph Backbone["Event backbone (port → Azure Event Hubs)"]
+    B[("streams / topics<br/>partition key = tenantId")]
+  end
+  subgraph Studio["Automation Studio"]
+    RT["event-router<br/>validate · dedupe · match"]
+    Q["BullMQ run queue"]
+    G["LangGraph.js graph<br/>resolve → policy → propose → approve → execute"]
+    API["studio-api<br/>triggers · workflows · runs · approvals"]
+    W["studio-web (Next.js + Eden)"]
+  end
+  DB[("Postgres<br/>outbox · runs · checkpoints · audit")]
+  R -- outbox --> B
+  T -- outbox --> B
+  B --> RT --> Q --> G
+  G --> DB
+  G -- "commands (idempotency keys)" --> R
+  G -- "commands" --> T
+  API --- DB
+  W <--> API
+  G -. "SSE run timeline" .-> W
+```
+
+## 5. Domain services
+
+### 5.1 `rostering-service` (port 4101)
+
+Owns shifts, roster publication, shift offers, and swap requests. Mirrors WFM `rosterItems` +
+`shiftTypes` + the `HF Work App` self-service flows (offers, swaps, requests).
+
+Emits: `shift.published`, `shift.unfilled`, `shift.cancelled`, `shift.swap_requested`,
+`shift.offers_sent`, `shift.assigned`.
+
+Exposes (used by the engine and the simulator):
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/shifts/:shiftId` | Shift detail incl. required qualifications |
+| GET | `/shifts/:shiftId/candidates` | Ranked eligible employees with per-candidate compliance notes and cost estimate |
+| POST | `/shifts/:shiftId/offers` | Offer the shift to an employee list (`Idempotency-Key` required) |
+| POST | `/shifts/:shiftId/assignment` | Direct assignment after approval (`Idempotency-Key` required) |
+| POST | `/shifts/:shiftId/cancellation` | Employee or manager cancels a shift (simulator + real path) |
+| POST | `/shifts/:shiftId/acceptance` | Employee accepts an offer — closes the loop |
+| GET | `/shifts` | Query by location/date window |
+
+### 5.2 `time-attendance-service` (port 4102)
+
+Owns clocking, breaks, timesheets, award rules, and pay-impacting exceptions. Mirrors WFM
+`clocking`, `timesheets`, `timesheetBreaks`, `awardprofiles`, `payRuns`.
+
+Emits: `attendance.clock_in_recorded`, `attendance.clock_out_recorded`, `attendance.missed_break`,
+`attendance.no_show`, `timesheet.exception_raised`, `timesheet.submitted`, `timesheet.adjusted`,
+`award.rule_violation_detected`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/timesheets/:timesheetId` | Timesheet with lines, breaks, allowances, pay types |
+| GET | `/timesheets/:timesheetId/exceptions` | Open exceptions with award context |
+| GET | `/award-rules/:ruleCode` | Award rule (max ordinary hours, minimum break, overtime multiplier) |
+| POST | `/timesheets/:timesheetId/adjustments` | Apply a break/overtime adjustment (`Idempotency-Key` required, records approver) |
+| POST | `/timesheets/:timesheetId/approval` | Approve a timesheet for a pay run |
+| POST | `/shifts/:shiftId/clock-out` | Simulator entry point that produces the missed-break/exception cases |
+
+## 6. Event contract
+
+Envelope (also exported as JSON Schema from `@wfm/contracts`):
+
+```jsonc
+{
+  "eventId": "uuid",              // idempotency + dedupe key
+  "eventType": "shift.cancelled", // entity.past_tense slug, mirrors HR webhook naming
+  "eventVersion": 1,              // schema version, additive-only evolution
+  "occurredAt": "2026-09-20T06:10:00.000Z",
+  "tenantId": "uuid",             // partition key; every consumer is tenant-scoped
+  "aggregate": { "type": "shift", "id": "uuid" },
+  "actor": { "type": "employee|manager|system", "id": "uuid" },
+  "correlationId": "uuid",        // one id per business intent, across services
+  "causationId": "uuid|null",     // event (or command) that caused this one
+  "traceparent": "00-...|null",   // W3C trace context, propagated through the stream
+  "payload": { /* skinny: ids + immutable facts, no mutable entity bodies */ }
+}
+```
+
+Rules that matter and are enforced in code:
+
+- **Identity, not truth.** A consumer may rely on `aggregate.id`; it must re-read current state via
+  the owning service's API before deciding anything. This mirrors Humanforce HR's skinny webhooks and
+  prevents acting on stale payloads.
+- **Additive-only evolution.** `eventVersion` bumps only for breaking changes; consumers reject
+  unknown versions to the DLQ rather than silently mis-reading them.
+- **Per-tenant ordering.** Partition key is `tenantId`, so one customer's events are ordered while
+  tenants stay parallel.
+
+## 7. Automation Studio
+
+### 7.1 Trigger catalogue
+
+`GET /triggers` publishes every event type with its JSON Schema, description, owner service, and a
+sample instance. The catalogue is generated from the event registry, so a new event cannot appear on
+the backbone without also appearing to customers.
+
+### 7.2 Workflows are data, authored on a canvas
+
+Customers compose workflows on a drag-and-drop canvas. The saved artifact is a definition, not code:
+
+```jsonc
+{
+  "name": "Rescue a cancelled shift",
+  "nodes": [
+    { "id": "when_shift_cancelled", "type": "trigger", "config": { "eventType": "shift.cancelled", "conditions": [...] } },
+    { "id": "rank_candidates", "type": "ai_decision", "config": { "goal": "...", "tools": ["shift.get", "shift.candidates"], "output": "candidate_choice" } },
+    { "id": "coverage_policy", "type": "policy_check", "config": { "checks": ["rest_rule", "cost_delta_cap"], "costCapCents": 12000 } },
+    { "id": "manager_approval", "type": "human_approval", "config": { "role": "roster_manager", "timeoutMinutes": 240, "escalateTo": "operations_lead" } },
+    { "id": "send_offers", "type": "action", "config": { "command": "rostering.send_offers", "input": { "employeeIds": "{{nodes.rank_candidates.output.employeeIds}}" } } }
+  ],
+  "edges": [
+    { "from": "coverage_policy", "to": "manager_approval", "port": "passed" },
+    { "from": "manager_approval", "to": "send_offers", "port": "approved" }
+  ]
+}
+```
+
+Node types: trigger, condition, ai_decision, policy_check, human_approval, action, end. Ports carry
+outcomes (`true`/`false`, `passed`/`failed`, `approved`/`rejected`). Templates wire one node's output
+into the next node's input and are validated at save time.
+
+`packages/workflows` owns the DSL, the catalogues (commands, tools, palette), the validator, and the
+compiler. Canvas geometry lives beside the definition as `layout` and never inside it.
+
+### 7.3 Platform invariants, enforced at save time
+
+The validator is the difference between a script and a platform. A definition is rejected when:
+
+1. a pay-affecting action is reachable without a `human_approval` on every path;
+2. any action is reachable without a `policy_check` on its path;
+3. a referenced event type, command, role, or template path does not exist;
+4. a node is unreachable, or a cycle exists;
+5. a branching node leaves a required port unwired.
+
+Diagnostics carry node ids, so the canvas highlights the offending node instead of printing a wall of
+text. The server re-validates on save and on publish; the client validates while editing for feedback.
+
+### 7.4 Versions and runs
+
+Saving creates an immutable version. Publishing snapshots the draft. Every run pins the version it
+started with, so editing a workflow never changes a run that is mid-approval. Runs are rows; every
+step transition is appended to `run_events`, which is what the UI streams.
+
+### 7.5 Run lifecycle and execution
+
+`queued → running → awaiting_approval → running → succeeded | failed | cancelled`
+
+- Execution is queued through BullMQ: `run.start`, `run.step`, and `approval.timeout` jobs with
+  exponential backoff, an attempts cap, and per-tenant concurrency.
+- Dedupe: `UNIQUE (workflow_id, event_id)` means a re-delivered event cannot start a second run, and
+  `processed_events` records what each consumer has already handled.
+- Approval timeouts escalate to another role. They never auto-approve a pay-affecting action.
+- A failed step retries; an unprocessable event goes to the dead letter table with its reason.
+
+### 7.6 The graph
+
+A validated definition compiles to a `GraphSpec`, and the engine builds a LangGraph `StateGraph` from
+that spec at run time. One node executor per node type:
+
+| Node | Does | May never |
+|---|---|---|
+| trigger | records the triggering event | — |
+| condition | evaluates predicates over the envelope and resolved context | call a model |
+| ai_decision | reasons with the node's declared read-only tools and returns structured output with evidence | choose an ineligible option; execute anything |
+| policy_check | deterministic guardrails: rest rule, availability, cost cap, award validity, overtime risk | delegate to a model |
+| human_approval | creates the approval, notifies, `interrupt()`s, resumes on the decision | auto-approve on timeout |
+| action | resolves input templates and calls the command with an idempotency key | write outside the owning service's API |
+| end | terminates the path with an outcome | — |
+
+Durable interrupts use the Postgres checkpointer, so a parked approval survives a restart. Everything
+before `interrupt()` re-runs on resume, so every write in that node is an upsert keyed by
+`(runId, nodeId)`.
+
+### 7.7 Studio API (port 4103)
+
+`GET /triggers` · `GET|POST /workflows` · `GET /workflows/:id` · `PUT /workflows/:id/draft` ·
+`POST /workflows/:id/publish` · `GET /runs` · `GET /runs/:runId` · `GET /runs/:runId/stream` (SSE) ·
+`GET /approvals` · `POST /approvals/:approvalId/decision` · `POST /simulator/:scenario`.
+
+The simulator drives the domain services over HTTP, never the bus, so the demo exercises the real path.
+
+## 8. Reliability model
+
+| Failure | Behaviour |
+|---|---|
+| Domain write succeeds, publish fails | Outbox row survives; publisher retries with `FOR UPDATE SKIP LOCKED`; at-least-once delivery |
+| Duplicate delivery | `eventId` unique per consumer + `UNIQUE (workflow_id, event_id)` on runs |
+| Consumer crash mid-batch | Redis Streams consumer group: unacked messages are re-claimed after idle timeout |
+| Malformed / unknown-version event | Rejected to `dlq:<stream>` with the reason, surfaced in the UI |
+| Command fails after approval | BullMQ retries; idempotency key makes the retry safe |
+| Approver never responds | Delayed job escalates; the run parks in `awaiting_approval` with an SLA timer |
+| Engine restart | Graph resumes from the Postgres checkpoint; queue state is in Redis |
+
+## 9. Observability
+
+Structured logs (pino) with `tenantId`, `runId`, `eventId`, `correlationId` on every line;
+`traceparent` injected into the envelope at publish and re-attached on consume so a single trace spans
+service → bus → engine → command; run timeline in the UI is the human-readable trace.
+
+## 10. Testing strategy
+
+- **Unit** — policy guardrails, predicate evaluator, candidate ranking, pay maths.
+- **Contract** — every producer's emitted sample events validate against `@wfm/contracts`; the
+  catalogue cannot drift from the schemas (one test walks the catalogue).
+- **Integration** — service API + outbox + backbone against real Postgres/Redis; approval resume
+  across a simulated process restart.
+- **End-to-end** — both demo scenarios: seed → event → run → approval → command → domain state
+  assertion, including a duplicate-event redelivery and an idempotent retry.
+
+## 11. Production mapping (what changes, what doesn't)
+
+| Demo | Production |
+|---|---|
+| Redis Streams consumer groups | Azure Event Hubs consumer groups (AMQP or Kafka endpoint); same envelope, same port |
+| BullMQ on Redis | BullMQ on Azure Cache for Redis (or Service Bus if the org standardises on it) |
+| Postgres checkpointer, single node | Postgres Flexible Server; checkpointer tables partitioned by tenant |
+| Demo actor headers | Entra ID (OIDC) + tenant-scoped RBAC; approval authority read from the same policy table |
+| Secrets in `.env` | Key Vault + managed identity |
+| pino to stdout | OTel SDK → Azure Monitor / Grafana; the same `traceparent` chain |
+
+## 12. Demo scenarios
+
+**A. Coverage rescue** (`shift.cancelled` with 8h to start, aged care RN shift)
+engine ranks candidates → cost delta exceeds the tenant threshold → manager approval → offers sent →
+employee accepts → `shift.assigned` → audit trail. Rejection path: run completes as
+`succeeded` with action `not_executed` and the reason recorded.
+
+**B. Payroll-safe timesheet exception** (`attendance.missed_break` + `timesheet.exception_raised`)
+engine fetches the timesheet and the award rule, computes unpaid-break and overtime impact →
+People Ops approval → adjustment applied with the approver recorded → `timesheet.adjusted` →
+visible on the timesheet for the pay run.
+
+## 13. Known trade-offs
+
+- Redis Streams instead of Kafka locally keeps the demo to one broker while preserving consumer
+  groups, replay, and partition-key ordering; the Event Hubs binding is a port swap (ADR-0004).
+- LangGraph.js is the graph runtime, but the *run* is ours: retries, DLQ, and approval SLAs live in
+  our orchestrator so we are not dependent on a framework for operational semantics (ADR-0005).
+- No RLS in the demo; tenant scoping is enforced at the query layer and asserted in tests. RLS with a
+  per-transaction `SET LOCAL app.tenant_id` is the production hardening path.

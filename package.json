@@ -1,0 +1,29 @@
+{
+  "name": "wfm-automation-studio",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "services/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "infra:up": "docker compose up -d --wait",
+    "infra:down": "docker compose down -v",
+    "db:migrate": "bun run --filter '@wfm/rostering-service' db:migrate && bun run --filter '@wfm/time-attendance-service' db:migrate && bun run --filter '@wfm/studio-api' db:migrate",
+    "dev": "bun run scripts/dev.ts",
+    "seed": "bun run scripts/seed.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test packages services",
+    "e2e": "bun test tests/e2e",
+    "check": "bun run typecheck && bun run test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "@wfm/contracts": "workspace:*",
+    "@wfm/testkit": "workspace:*",
+    "@wfm/workflows": "workspace:*",
+    "postgres": "^3.4.7",
+    "typescript": "^5.9.2"
+  }
+}
