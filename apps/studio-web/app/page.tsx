@@ -19,10 +19,6 @@ interface WorkflowListItem {
   updatedAt: string;
 }
 
-interface EngineWorkflowsResponse {
-  workflows: WorkflowListItem[];
-}
-
 /**
  * The simulator drives the domain services directly, so the engine starts the
  * run asynchronously; the response has no runId. We remember which runs existed
@@ -50,7 +46,7 @@ const scenarioCopy: Record<SimulatorScenario, { label: string; description: stri
 
 export default function OverviewPage() {
   const { headers } = useDemoActor();
-  const [workflows, setWorkflows] = useState<EngineWorkflowsResponse | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowListItem[] | null>(null);
   const [runs, setRuns] = useState<RunSummary[] | null>(null);
   const [approvals, setApprovals] = useState<Approval[] | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -64,7 +60,7 @@ export default function OverviewPage() {
     setError(null);
     try {
       const [workflowList, runList, pending] = await Promise.all([
-        apiFetch<EngineWorkflowsResponse>('/workflows', { headers }),
+        apiFetch<WorkflowListItem[]>('/workflows', { headers }),
         apiFetch<RunSummary[]>('/runs?limit=5', { headers }),
         apiFetch<Approval[]>('/approvals?status=pending', { headers }),
       ]);
@@ -128,8 +124,8 @@ export default function OverviewPage() {
     }
   };
 
-  const workflowCount = workflows === null ? null : workflows.workflows.length;
-  const enabledCount = workflows === null ? 0 : workflows.workflows.filter((workflow) => workflow.enabled).length;
+  const workflowCount = workflows === null ? null : workflows.length;
+  const enabledCount = workflows === null ? 0 : workflows.filter((workflow) => workflow.enabled).length;
 
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-6 px-6 py-8">

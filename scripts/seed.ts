@@ -178,6 +178,15 @@ async function seedAttendance(): Promise<void> {
 async function seedStudio(): Promise<void> {
   const workflowIds = [coverageWorkflowId, payrollWorkflowId];
 
+  // A demo should start from a clean slate: leftovers from a previous run make
+  // the approvals inbox and the run list unreadable.
+  await studio`DELETE FROM approvals WHERE tenant_id = ${tenantId}`;
+  await studio`DELETE FROM run_events`;
+  await studio`DELETE FROM runs WHERE tenant_id = ${tenantId}`;
+  await studio`DELETE FROM processed_events`;
+  await studio`DELETE FROM audit_log WHERE tenant_id = ${tenantId}`;
+  await studio`DELETE FROM dead_letters WHERE tenant_id = ${tenantId}`;
+
   for (const workflowId of workflowIds) {
     await studio`DELETE FROM workflow_versions WHERE workflow_id = ${workflowId}`;
     await studio`DELETE FROM workflows WHERE workflow_id = ${workflowId}`;
