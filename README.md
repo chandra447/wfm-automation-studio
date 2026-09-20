@@ -156,7 +156,7 @@ Both are driven by the services, not by a test hook. The simulator calls the sam
 
 ## How it is built
 
-- **Runtime and types.** Bun, strict TypeScript, no `any`, external data parsed at boundaries with zod. The UI imports the server's route types through Elysia's Eden treaty.
+- **Runtime and types.** Bun, strict TypeScript, no `any`, external data parsed at boundaries with zod. The runtime's own clients are preferred over npm drivers where it has them, which is a deliberate trade: the code is Bun-specific rather than portable to Node. The UI imports the server's route types through Elysia's Eden treaty.
 - **Data.** Postgres with Drizzle ORM over Bun's built-in SQL client, one database per service. A domain write and its outbox rows share a transaction, which is what makes at-least-once publication safe.
 - **Events.** One envelope shape everywhere, versioned, tenant-partitioned, carrying correlation, causation, and trace context. Payloads carry identity, not truth, so consumers re-read current state. This mirrors the skinny webhooks Humanforce HR already emits. The Redis Streams binding runs on Bun's own Redis client, so our packages carry no Redis driver; BullMQ brings its own, which is a property of that library rather than a choice here.
 - **Execution.** BullMQ owns retries, backoff, delayed approval timeouts, and concurrency. LangGraph owns the graph and the interrupt. Our orchestrator owns the run record, the audit, and the timeline.

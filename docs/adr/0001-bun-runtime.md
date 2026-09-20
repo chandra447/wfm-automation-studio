@@ -18,5 +18,10 @@ Next.js runs under `bun --bun`.
 - `bun test` covers unit/integration/e2e; `bun install` resolves workspaces.
 - Two runtime-compatibility risks were verified before committing to the stack (BullMQ on Redis,
   LangGraph.js Postgres checkpointer) in `tests/compat/bun-runtime.test.ts`.
-- Deployment target is Node-compatible either way: the code uses no Bun-only APIs outside scripts, so
-  a container can run `node` or `bun` unchanged.
+- **Prefer the runtime's own clients over npm drivers.** Postgres goes through `Bun.SQL` with Drizzle
+  (`drizzle-orm/bun-sql`) and Redis through `Bun.redis`, so this repo carries no database or cache
+  driver of its own. The cost is real and accepted: `Bun.SQL`, `Bun.redis`, and `Bun.serve` are
+  Bun-only, so the deployment target is Bun rather than "node or bun unchanged". Where a library
+  insists on its own driver, the driver stays as that library's dependency: LangGraph's Postgres
+  checkpointer takes a `pg` Pool, and BullMQ builds its own ioredis connections.
+- Scripts may use anything Bun offers; they are tools, not the product.
