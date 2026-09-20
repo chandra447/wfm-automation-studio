@@ -60,10 +60,16 @@ export class Simulator {
 
   async #payrollException(actor: ActorContext): Promise<SimulatorResponse> {
     const shiftId = DEMO.payrollShiftId;
+    const shift = await this.#clients.rostering.getShift(actor.tenantId, shiftId);
+    // Clock out at the scheduled end, not at wall-clock now. The demo shift is
+    // seeded in the past, and clocking out "now" would invent hours that were
+    // never worked, so the overtime the workflow reasons about would be wrong.
+    const scheduledEnd = new Date(shift.endsAt);
+    const at = scheduledEnd.getTime() < Date.now() ? scheduledEnd.toISOString() : new Date().toISOString();
     const clockOut = await this.#clients.attendance.clockOut(actor.tenantId, shiftId, {
       employeeId: DEMO.coverageEmployeeId,
       shiftId: null,
-      at: new Date().toISOString(),
+      at,
       breakMinutesTaken: 0,
     });
     this.#logger.info(

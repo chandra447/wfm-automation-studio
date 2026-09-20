@@ -288,9 +288,11 @@ node's `needs_attention` outcome, no command is issued, and the decision plus it
 timeline as an `approval_decided` event. Covered by an end-to-end test.
 
 **B. Payroll-safe timesheet exception** (`attendance.missed_break` + `timesheet.exception_raised`)
-engine fetches the timesheet and the award rule, computes unpaid-break and overtime impact →
-People Ops approval → adjustment applied with the approver recorded → `timesheet.adjusted` →
-visible on the timesheet for the pay run.
+A nurse works an 8.5 hour shift and clocks out without the unpaid break the award requires, crossing
+into 29 minutes of overtime. The engine reads the timesheet and the award rule, drafts the adjustment
+and its pay impact (a $32.00 unpaid break plus a $15.47 overtime premium), and waits for People Ops.
+On approval the adjustment is applied, the timesheet settles at $558.40, and the audit row names the
+approver.
 
 ## 13. Known trade-offs
 

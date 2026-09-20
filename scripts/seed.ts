@@ -118,7 +118,9 @@ async function seedRostering(): Promise<void> {
     )
   `;
 
-  // A completed shift that produced the timesheet in the payroll scenario.
+  // A completed shift that produced the timesheet in the payroll scenario. It
+  // runs 8.5 hours so clocking out at the scheduled end crosses the 8 hour
+  // ordinary cap and the workflow has real overtime to reason about.
   await rostering`
     INSERT INTO shifts (
       id, tenant_id, location_id, role_name, required_qualification_codes,
@@ -126,8 +128,8 @@ async function seedRostering(): Promise<void> {
     ) VALUES (
       ${completedShiftId}, ${tenantId}, ${locationId}, 'Registered Nurse',
       ${rostering.json(['RN', 'AGED_CARE'])},
-      ${hoursFromNow(-14)}, ${hoursFromNow(-6)}, 6400, 'assigned',
-      ${employees[2].id}, 51200
+      ${hoursFromNow(-14)}, ${hoursFromNow(-5.5)}, 6400, 'assigned',
+      ${employees[2].id}, 54400
     )
   `;
 }
@@ -158,14 +160,16 @@ async function seedAttendance(): Promise<void> {
     )
   `;
 
-  // Marcus clocked out of an 8.25 hour shift without taking the unpaid break.
+  // Marcus worked 8.5 hours and clocked out without taking the unpaid break.
+  // The clock-out path recomputes these totals from the shift window, so the
+  // seeded row is the pre-clock-out state the workflow will read.
   await attendance`
     INSERT INTO timesheets (
       id, tenant_id, employee_id, employee_name, shift_id, period_start, period_end, status,
       worked_minutes, ordinary_minutes, overtime_minutes, paid_minutes, total_pay_cents
     ) VALUES (
       ${timesheetId}, ${tenantId}, ${employees[2].id}, ${employees[2].name}, ${completedShiftId},
-      ${hoursFromNow(-14)}, ${hoursFromNow(-6)}, 'open', 495, 480, 15, 480, 51200
+      ${hoursFromNow(-14)}, ${hoursFromNow(-5.5)}, 'open', 510, 480, 30, 510, 56000
     )
   `;
 
