@@ -6,6 +6,7 @@ export const endKind = defineKind(
   z.object({ outcome: z.enum(['completed', 'stopped', 'needs_attention']).default('completed') }),
   {
     ports: [],
+    inputs: [{ id: 'in', label: 'Input' }],
     capabilities: { terminal: true },
     palette: {
       label: 'End',

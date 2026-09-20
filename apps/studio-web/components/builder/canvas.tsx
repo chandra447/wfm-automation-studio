@@ -51,6 +51,7 @@ import {
   diagnosticsByNode,
   edgeKey,
   emptyDefinitionFor,
+  inputsOf,
   isEdgePort,
   legalPortsFor,
   NODE_SIZE,
@@ -227,7 +228,7 @@ function FlowCanvas({
       const sourceType = nodeTypeById[source];
       const targetType = nodeTypeById[target];
       if (!sourceType || !targetType) return false;
-      if (targetType === 'trigger' || sourceType === 'end') return false;
+      if (inputsOf(targetType).length === 0 || sourceType === 'end') return false;
       if (!isEdgePort(sourceHandle ?? 'always')) return false;
       return legalPortsFor(sourceType).includes(isEdgePort(sourceHandle) ? sourceHandle : 'always');
     },
@@ -274,7 +275,7 @@ function FlowCanvas({
             const sourceType = nodeTypeById[source];
             const targetType = nodeTypeById[target];
             if (!sourceType || !targetType) return;
-            if (targetType === 'trigger' || sourceType === 'end') return;
+            if (inputsOf(targetType).length === 0 || sourceType === 'end') return;
             const port: EdgePort = isEdgePort(sourceHandle) ? sourceHandle : 'always';
             if (!legalPortsFor(sourceType).includes(port)) return;
             onConnect({ from: source, to: target, port });

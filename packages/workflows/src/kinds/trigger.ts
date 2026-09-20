@@ -10,6 +10,7 @@ export const triggerKind = defineKind(
   }),
   {
     ports: ['always'],
+    inputs: [],
     capabilities: { isTrigger: true },
     palette: {
       label: 'When event happens',

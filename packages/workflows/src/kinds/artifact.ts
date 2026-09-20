@@ -16,6 +16,7 @@ export const artifactKind = defineKind(
   }),
   {
     ports: ['always'],
+    inputs: [{ id: 'in', label: 'Input' }],
     capabilities: { producesArtifact: true },
     palette: {
       label: 'Artifact',

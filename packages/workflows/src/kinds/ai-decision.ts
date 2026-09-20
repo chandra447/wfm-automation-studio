@@ -16,6 +16,7 @@ export const aiDecisionKind = defineKind(
   }),
   {
     ports: ['always'],
+    inputs: [{ id: 'in', label: 'Input' }],
     capabilities: { producesOutput: true },
     palette: {
       label: 'AI decision',

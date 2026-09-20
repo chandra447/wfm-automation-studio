@@ -152,6 +152,11 @@ export function fieldsOf(type: WorkflowNodeType) {
   return kindFor(type).fields;
 }
 
+/** Where an edge may arrive. The canvas draws one target handle per entry. */
+export function inputsOf(type: WorkflowNodeType) {
+  return kindFor(type).inputs;
+}
+
 export const portLabels: Readonly<Record<EdgePort, string>> = {
   always: 'next',
   true: 'yes',

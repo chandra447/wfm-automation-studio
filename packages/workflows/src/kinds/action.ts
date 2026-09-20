@@ -12,6 +12,7 @@ export const actionKind = defineKind(
   }),
   {
     ports: ['always'],
+    inputs: [{ id: 'in', label: 'Input' }],
     capabilities: { mutatesDomain: true },
     /** Pay impact depends on which command this node runs, not on the kind. */
     capabilitiesOf: (node) => ({

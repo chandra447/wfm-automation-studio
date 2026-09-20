@@ -18,6 +18,7 @@ export const policyCheckKind = defineKind(
   }),
   {
     ports: ['passed', 'failed'],
+    inputs: [{ id: 'in', label: 'Input' }],
     requiredPorts: [
       {
         port: 'passed',

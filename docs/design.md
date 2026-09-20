@@ -192,10 +192,24 @@ component.
 ### 7.2.1 A node kind is one declaration
 
 Each kind lives in its own file under `packages/workflows/src/kinds/` and declares everything the
-platform knows about it: config schema, legal ports, ports that must be wired, capabilities, palette
-entry, canvas field specs, a summary function, kind-local config rules, and the config strings that
-carry `{{...}}` references. One registry table assembles them into the runtime schema and the
-TypeScript union, and derives the palette, the legal-ports table, and the default-node builder.
+platform knows about it: config schema, legal ports, the inputs an edge may arrive at, ports that
+must be wired, capabilities, palette entry, canvas field specs, a summary function, kind-local
+config rules, and the config strings that carry `{{...}}` references. One registry table assembles
+them into the runtime schema and the TypeScript union, and derives the palette, the legal-ports
+table, and the default-node builder.
+
+Inputs and outputs are declared in the same place and read by the same three consumers. `ports` is
+what a node can emit; `inputs` is where an edge may arrive, and the canvas draws one target handle
+per entry, the validator refuses an edge into a kind that declares none, and the builder's `connect`
+operation refuses it too, with the kind named. `trigger` is the only kind that declares no input, and
+it says so in its own file rather than being special-cased by name in the canvas and the validator.
+
+The declaration is required rather than defaulted, so a new kind cannot accept edges without someone
+deciding it, and the compiler enforces that the way it enforces `ports`. The array is the extension
+point but no kind declares more than one entry today, because an edge names a source port and nothing
+else: `WorkflowEdge` is `{ from, to, port }`. A kind with two inputs would be unaddressable, so a
+registry test pins the ceiling and names the follow-up. When something needs them, the edge grows a
+`toPort`, React Flow edges grow a `targetHandle`, and the declaration becomes a routing dimension.
 
 The validator's platform invariants are written against capabilities, not kinds:
 

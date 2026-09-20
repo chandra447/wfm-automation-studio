@@ -10,6 +10,7 @@ export const conditionKind = defineKind(
   }),
   {
     ports: ['true', 'false'],
+    inputs: [{ id: 'in', label: 'Input' }],
     requiredPorts: [
       {
         port: 'true',

@@ -158,6 +158,12 @@ describe('structural validation', () => {
     expect(codes(definition)).toContain('PORT_MISSING');
   });
 
+  test('an edge into a kind that declares no input is rejected', () => {
+    const definition = structuredClone(coverageRescueWorkflow);
+    definition.edges.push({ from: 'cover_note', to: 'when_shift_cancelled', port: 'always' });
+    expect(codes(definition)).toContain('INPUT_NOT_ACCEPTED');
+  });
+
   test('an unknown AI tool is rejected', () => {
     const definition = structuredClone(coverageRescueWorkflow);
     const ai = definition.nodes.find((node) => node.type === 'ai_decision');

@@ -5,6 +5,7 @@ import {
   defaultNodeOf,
   fieldsOf,
   kindFor,
+  inputsOf,
   legalPortsByNodeType,
   nodePalette,
   toolCatalog,
@@ -42,6 +43,7 @@ export function kindLines(models: readonly ModelDescriptor[]): string[] {
     return [
       `- ${entry.type} — "${entry.label}": ${entry.description}`,
       `  ports: ${legalPortsByNodeType[entry.type].join(', ') || 'none (terminal)'}`,
+      `  inputs: ${inputsOf(entry.type).map((input) => input.id).join(', ') || 'none (nothing may feed it)'}`,
       '  config keys:',
       ...fieldsOf(entry.type).map((field) => {
         const declared = shape[field.key];

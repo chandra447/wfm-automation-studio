@@ -97,6 +97,21 @@ export interface PortRequirement {
   readonly message: string;
 }
 
+/**
+ * One place an edge may arrive. The canvas draws a target handle per input, and
+ * the validator refuses an edge into a node that declares none.
+ *
+ * Today every kind declares zero or one, because an edge names a source port
+ * and nothing else: `WorkflowEdge` is `{ from, to, port }`. A kind that needed
+ * two inputs would be unaddressable, which is what the registry test pins. When
+ * something needs them, the edge grows a `toPort` and this array becomes a
+ * routing dimension rather than a declaration.
+ */
+export interface InputSpec {
+  readonly id: string;
+  readonly label: string;
+}
+
 /** The full node schema for one kind. Kept precise so the union discriminates. */
 export type NodeSchemaOf<TType extends string, S extends z.ZodObject<z.ZodRawShape>> = z.ZodObject<{
   id: z.ZodString;
@@ -112,6 +127,7 @@ export interface NodeKind<TType extends string = string, S extends z.ZodObject<z
   /** The full node schema, built by defineKind from the config schema. */
   readonly nodeSchema: NodeSchemaOf<TType, S>;
   readonly ports: readonly EdgePort[];
+  readonly inputs: readonly InputSpec[];
   readonly requiredPorts: readonly PortRequirement[];
   readonly capabilities: NodeCapabilities;
   /**

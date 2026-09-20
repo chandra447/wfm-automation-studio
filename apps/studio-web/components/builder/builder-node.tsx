@@ -4,6 +4,7 @@ import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import {
   fieldsOf,
+  inputsOf,
   portLabels,
   type EdgePort,
   type FieldSpec,
@@ -101,10 +102,10 @@ export function BuilderNode({ data, selected }: NodeProps<BuilderFlowNode>) {
   const errors = diagnostics.filter((diagnostic) => diagnostic.severity === 'error');
   const warnings = diagnostics.filter((diagnostic) => diagnostic.severity === 'warning');
   const ports = legalPortsFor(node.type);
+  const inputs = inputsOf(node.type);
   const config: Record<string, unknown> = node.config;
   const fields = cardFields(node, config);
   const Icon = nodeIconByType[node.type];
-  const hasInput = node.type !== 'trigger';
 
   return (
     <div
@@ -114,21 +115,25 @@ export function BuilderNode({ data, selected }: NodeProps<BuilderFlowNode>) {
         selected && 'ring-2 ring-[var(--color-primary)]',
       )}
     >
-      {hasInput && (
-        <div className="relative flex h-7 items-center px-3.5">
-          <Handle
-            type="target"
-            position={Position.Left}
-            id="in"
-            style={{ ...handleShape, backgroundColor: 'var(--color-ink-faint)' }}
-          />
-          <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-ink-faint)]">
-            Input
-          </span>
+      {inputs.length > 0 && (
+        <div className="flex flex-col">
+          {inputs.map((input) => (
+            <div key={input.id} className="relative flex h-7 items-center px-3.5">
+              <Handle
+                type="target"
+                position={Position.Left}
+                id={input.id}
+                style={{ ...handleShape, backgroundColor: 'var(--color-ink-faint)' }}
+              />
+              <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--color-ink-faint)]">
+                {input.label}
+              </span>
+            </div>
+          ))}
         </div>
       )}
 
-      <div className={cn('flex items-start gap-2.5 px-3.5', hasInput ? 'pt-1' : 'pt-3')}>
+      <div className={cn('flex items-start gap-2.5 px-3.5', inputs.length > 0 ? 'pt-1' : 'pt-3')}>
         <span
           className="flex size-[22px] shrink-0 items-center justify-center rounded-md"
           style={{ backgroundColor: `color-mix(in oklab, ${accent} 18%, transparent)`, color: accent }}

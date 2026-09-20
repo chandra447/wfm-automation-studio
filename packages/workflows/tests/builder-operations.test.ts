@@ -74,6 +74,14 @@ describe('applyOperations', () => {
     expect(outcome.definition.edges).toHaveLength(definition.edges.length);
   });
 
+  test('an edge into a kind that takes no input is refused with the kind named', () => {
+    const outcome = run([{ op: 'connect', from: { node: 'cover_note', port: 'always' }, to: 'when_shift_cancelled' }]);
+
+    expect(outcome.applied).toEqual([]);
+    expect(outcome.rejected[0]?.reason).toBe('a trigger node cannot be targeted by an edge');
+    expect(outcome.definition.edges).toHaveLength(definition.edges.length);
+  });
+
   test('a duplicate id, a missing node, and a self-loop are each refused', () => {
     const outcome = run([
       { op: 'add_node', id: 'cover_note', type: 'end' },

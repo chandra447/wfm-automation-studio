@@ -10,6 +10,7 @@ import {
 import {
   defaultNodeOf,
   kindFor,
+  inputsOf,
   legalPortsByNodeType,
   workflowNodeSchema,
   workflowNodeTypeSchema,
@@ -225,6 +226,10 @@ function connect(draft: Draft, operation: Extract<BuilderOperation, { op: 'conne
       from.id,
       `a ${from.type} node has no "${operation.from.port}" port; it has ${ports.join(', ')}`,
     );
+    return;
+  }
+  if (inputsOf(to.type).length === 0) {
+    reject(draft, operation.op, to.id, `a ${to.type} node cannot be targeted by an edge`);
     return;
   }
   if (from.id === to.id) {

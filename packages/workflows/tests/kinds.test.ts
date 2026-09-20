@@ -7,6 +7,7 @@ import {
   defaultNodeOf,
   defaultValidationContext,
   defineKind,
+  inputsOf,
   legalPortsByNodeType,
   nodeKinds,
   nodePalette,
@@ -56,6 +57,19 @@ describe('registry', () => {
       const kind = nodeKinds[key as WorkflowNode['type']];
       expect(legalPortsByNodeType[key as WorkflowNode['type']]).toEqual(kind.ports);
       expect(kind.fields.length).toBeGreaterThan(0);
+      expect(inputsOf(key as WorkflowNode['type'])).toEqual(kind.inputs);
+    }
+  });
+
+  test('the trigger is the only kind that takes no input', () => {
+    for (const key of Object.keys(nodeKinds)) {
+      const inputs = inputsOf(key as WorkflowNode['type']);
+      // An edge names a source port and nothing else, so a kind with two
+      // inputs would be unaddressable. When one needs them, `WorkflowEdge`
+      // grows a `toPort`, React Flow edges grow a `targetHandle`, and this
+      // ceiling comes off.
+      expect(inputs.length).toBeLessThanOrEqual(1);
+      expect(inputs.length).toBe(key === 'trigger' ? 0 : 1);
     }
   });
 });
@@ -94,6 +108,7 @@ describe('a kind the rules have never seen', () => {
    */
   const notifyKind = defineKind('notify', z.object({ channel: z.string().min(1) }), {
     ports: ['always'],
+    inputs: [{ id: 'in', label: 'Input' }],
     capabilities: { mutatesDomain: true },
     capabilitiesOf: () => ({ mutatesDomain: true, payImpact: true }),
     palette: { label: 'Notify', description: 'Sends a message.', accent: 'teal', icon: '✉' },

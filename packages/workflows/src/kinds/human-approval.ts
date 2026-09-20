@@ -13,6 +13,7 @@ export const humanApprovalKind = defineKind(
   }),
   {
     ports: ['approved', 'rejected'],
+    inputs: [{ id: 'in', label: 'Input' }],
     requiredPorts: [
       {
         port: 'approved',

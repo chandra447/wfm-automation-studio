@@ -117,14 +117,25 @@ function checkPorts(graph: Graph, diagnostics: Diagnostic[]): void {
         nodeId: node.id,
       });
     }
-    if (kind.capabilities.isTrigger === true && (graph.incoming[node.id] ?? []).length > 0) {
-      diagnostics.push({
-        severity: 'error',
-        code: 'TRIGGER_HAS_INCOMING',
-        message: 'The trigger node cannot be targeted by an edge.',
-        nodeId: node.id,
-      });
-    }
+  }
+}
+
+/**
+ * An edge may only arrive where the kind says it can. Every kind but the
+ * trigger declares one input, so this is the general form of the rule the
+ * trigger used to carry alone: a kind that takes no input says so by declaring
+ * none, rather than by the validator knowing its name.
+ */
+function checkInputs(graph: Graph, diagnostics: Diagnostic[]): void {
+  for (const node of Object.values(graph.byId)) {
+    if ((graph.incoming[node.id] ?? []).length === 0) continue;
+    if (kindOf(node).inputs.length > 0) continue;
+    diagnostics.push({
+      severity: 'error',
+      code: 'INPUT_NOT_ACCEPTED',
+      message: `A ${node.type} node cannot be targeted by an edge.`,
+      nodeId: node.id,
+    });
   }
 }
 
@@ -334,6 +345,7 @@ export function validateWorkflow(
 
   checkNodeConfigs(definition, context, diagnostics);
   checkPorts(graph, diagnostics);
+  checkInputs(graph, diagnostics);
   const cyclic = detectCycles(graph, diagnostics);
   checkReachability(graph, diagnostics);
   checkTemplates(graph, context, diagnostics);
