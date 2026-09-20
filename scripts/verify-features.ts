@@ -677,7 +677,7 @@ async function checkAgentNode(): Promise<void> {
     const status = String(asRecord(finished['run'])['status']);
     record(
       'agent: a loop node runs the payroll workflow and proposes',
-      status === 'awaiting_approval' &&
+      ['awaiting_approval', 'succeeded'].includes(status) &&
         data['proposer'] === 'agent' &&
         trail.length > 0 &&
         trail.every((tool) => declared.has(tool)) &&

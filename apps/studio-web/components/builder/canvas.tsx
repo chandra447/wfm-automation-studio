@@ -52,9 +52,7 @@ import {
   diagnosticsByNode,
   edgeKey,
   emptyDefinitionFor,
-  inputsOf,
   isEdgePort,
-  legalPortsFor,
   NODE_SIZE,
   nextNodeId,
   readLocalDraft,
@@ -189,7 +187,6 @@ function Banner({ tone, children }: { tone: 'warning' | 'danger'; children: Reac
 function FlowCanvas({
   flowNodes,
   flowEdges,
-  nodeTypeById,
   sources,
   viewportSeed,
   initialViewport,
@@ -202,10 +199,10 @@ function FlowCanvas({
   onNodeDragStop,
   onNodeChange,
   onViewportChange,
+  connectionAllowed,
 }: {
   flowNodes: BuilderFlowNode[];
   flowEdges: Edge[];
-  nodeTypeById: Record<string, WorkflowNodeType>;
   sources: OptionSources;
   viewportSeed: string;
   initialViewport: CanvasLayout['viewport'];
@@ -370,11 +367,6 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
     () => snapshot.definition.nodes.find((candidate) => candidate.id === selectedId) ?? null,
     [snapshot.definition, selectedId],
   );
-  const nodeTypeById = useMemo(() => {
-    const table: Record<string, WorkflowNodeType> = {};
-    for (const node of snapshot.definition.nodes) table[node.id] = node.type;
-    return table;
-  }, [snapshot.definition]);
   const sources = useMemo<OptionSources>(() => ({ triggerEvents, models }), [triggerEvents, models]);
   const triggerEventType = useMemo(() => {
     const trigger = snapshot.definition.nodes.find((node) => node.type === 'trigger');
@@ -797,7 +789,6 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
           <FlowCanvas
             flowNodes={flowNodes}
             flowEdges={flowEdges}
-            nodeTypeById={nodeTypeById}
             sources={sources}
             viewportSeed={offline ? `offline:${workflowId}` : loaded ? `loaded:${workflowId}` : 'pending'}
             initialViewport={snapshot.layout.viewport}

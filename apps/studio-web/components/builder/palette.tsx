@@ -13,6 +13,7 @@ const groupByType: Record<WorkflowNodeType, string> = {
   trigger: 'Triggers',
   condition: 'Decisions',
   ai_decision: 'Decisions',
+  agent: 'Decisions',
   policy_check: 'Policy',
   human_approval: 'Approvals',
   action: 'Actions',

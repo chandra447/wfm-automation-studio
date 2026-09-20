@@ -13,7 +13,7 @@
     "db:migrate": "bun run --filter '@wfm/rostering-service' db:migrate && bun run --filter '@wfm/time-attendance-service' db:migrate && bun run --filter '@wfm/studio-api' db:migrate",
     "dev": "bun run scripts/dev.ts",
     "seed": "bun run scripts/seed.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/studio-web/tsconfig.json",
     "test": "bun test packages services",
     "e2e": "bun test tests/e2e",
     "check": "bun run typecheck && bun run test"
