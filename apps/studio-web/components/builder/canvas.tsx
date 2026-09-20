@@ -13,6 +13,7 @@ import {
   type Connection,
   type Edge,
   type Node,
+  type NodeDimensionChange,
   type NodeTypes,
   type XYPosition,
 } from '@xyflow/react';
@@ -199,6 +200,7 @@ function FlowCanvas({
   onNodeDragStop,
   onNodeChange,
   onViewportChange,
+  onNodesMeasured,
   connectionAllowed,
 }: {
   flowNodes: BuilderFlowNode[];
@@ -214,6 +216,8 @@ function FlowCanvas({
   onEdgesDelete: (edgeIds: string[]) => void;
   onNodeDragStop: (moves: Record<string, XYPosition>) => void;
   onNodeChange: (node: WorkflowNode, coalesceKey?: string) => void;
+  /** Where React Flow's measurement lands, so the minimap can draw the cards. */
+  onNodesMeasured: (measured: readonly { id: string; dimensions: { width: number; height: number } }[]) => void;
   onViewportChange: (viewport: CanvasLayout['viewport']) => void;
   /** Whether a drag may land. The rule is the DSL's, so it is asked once, above. */
   connectionAllowed: (connection: Connection | Edge) => boolean;
@@ -260,6 +264,15 @@ function FlowCanvas({
             if (!source || !target || source === target) return;
             const port: EdgePort = isEdgePort(sourceHandle) ? sourceHandle : 'always';
             onConnect({ from: source, to: target, port });
+          }}
+          onNodesChange={(changes) => {
+            const measured = changes.filter(
+              (change): change is NodeDimensionChange =>
+                change.type === 'dimensions' && change.dimensions !== undefined,
+            );
+            if (measured.length > 0) {
+              onNodesMeasured(measured.map((change) => ({ id: change.id, dimensions: change.dimensions! })));
+            }
           }}
           onNodesDelete={(deleted) => onNodesDelete(deleted.map((node) => node.id))}
           onEdgesDelete={(deleted) => onEdgesDelete(deleted.map((edge) => edge.id))}
@@ -358,9 +371,30 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
   // One cache for the life of the page: it is what keeps node identities stable
   // across the re-renders that would otherwise un-initialise the canvas.
   const flowNodeCache = useRef(createFlowNodeCache());
+  /**
+   * React Flow measures a node and keeps the result on its own internal copy,
+   * while the minimap draws from the node object the canvas was handed. Writing
+   * the measurement back onto that object, and re-rendering once so the canvas
+   * adopts it, is what puts the cards in the minimap.
+   */
+  const [measuredTick, setMeasuredTick] = useState(0);
+  const onNodesMeasured = useCallback(
+    (measured: readonly { id: string; dimensions: { width: number; height: number } }[]) => {
+      let adopted = false;
+      for (const entry of measured) {
+        const cached = flowNodeCache.current.entries[entry.id];
+        if (cached === undefined || cached.node.measured !== undefined) continue;
+        cached.node.measured = entry.dimensions;
+        adopted = true;
+      }
+      if (adopted) setMeasuredTick((tick) => tick + 1);
+    },
+    [],
+  );
   const flowNodes = useMemo(
     () => toFlowNodes(snapshot.definition, snapshot.layout, grouped, selectedId, flowNodeCache.current, focusedIds),
-    [snapshot, grouped, selectedId, focusedIds],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the tick exists to hand React Flow a fresh array once the cards are measured
+    [snapshot, grouped, selectedId, focusedIds, measuredTick],
   );
   const flowEdges = useMemo(() => toFlowEdges(snapshot.definition), [snapshot.definition]);
   const selectedNode: WorkflowNode | null = useMemo(
@@ -810,6 +844,7 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
             onNodeDragStop={store.updatePositions}
             onNodeChange={store.updateNode}
             onViewportChange={store.updateViewport}
+            onNodesMeasured={onNodesMeasured}
             connectionAllowed={connectionAllowed}
           />
         </BuilderShell>
