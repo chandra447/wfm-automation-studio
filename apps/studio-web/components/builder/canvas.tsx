@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
-import '@xyflow/react/dist/style.css';
 import {
   Background,
   BackgroundVariant,
