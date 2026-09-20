@@ -697,6 +697,11 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
             setFocusedIds(focus.nodeIds);
             if (nextDiagnostics.length > 0) setDiagnosticsOpen(true);
           }}
+          onFocus={(focus) => {
+            // The ring, without adopting a graph the turn has not finished
+            // producing: the agent points while it is still working.
+            setFocusedIds(focus.nodeIds);
+          }}
         />
       ),
     },

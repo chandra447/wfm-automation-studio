@@ -1,5 +1,10 @@
 import type { ActorContext } from '@wfm/contracts';
-import type { BuilderChatHistory, BuilderChatRequest, BuilderChatResponse } from '@wfm/workflows';
+import type {
+  BuilderChatHistory,
+  BuilderChatRequest,
+  BuilderChatResponse,
+  BuilderStreamEvent,
+} from '@wfm/workflows';
 import type { LlmProvider } from '../llm/provider.ts';
 import type { LlmServices } from '../llm/index.ts';
 import { BuilderAgent } from './agent.ts';
@@ -19,6 +24,12 @@ const HISTORY_LIMIT = 200;
 
 export interface BuilderRouteHandlers {
   chat: (actor: ActorContext, workflowId: string, request: BuilderChatRequest) => Promise<BuilderChatResponse>;
+  chatStream: (
+    actor: ActorContext,
+    workflowId: string,
+    request: BuilderChatRequest,
+    signal: AbortSignal,
+  ) => AsyncIterable<BuilderStreamEvent>;
   history: (actor: ActorContext, workflowId: string) => Promise<BuilderChatHistory>;
 }
 
@@ -32,6 +43,8 @@ export function builderRouteHandlers(deps: { db: BuilderDb; llm: LlmServices }):
 
   return {
     chat: (actor, workflowId, request) => agent.chat({ workflowId, tenantId: actor.tenantId, request }),
+    chatStream: (actor, workflowId, request, signal) =>
+      agent.chatStream({ workflowId, tenantId: actor.tenantId, request, signal }),
     history: async (actor, workflowId) => ({
       messages: await store.listTurns(workflowId, actor.tenantId, HISTORY_LIMIT),
     }),

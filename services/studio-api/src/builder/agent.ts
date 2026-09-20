@@ -1,9 +1,14 @@
 import type { BaseMessage } from '@langchain/core/messages';
-import { AIMessage, HumanMessage } from '@langchain/core/messages';
+import { AIMessage, AIMessageChunk, HumanMessage, isBaseMessage, ToolMessage } from '@langchain/core/messages';
 import { createDeepAgent, createSummarizationMiddleware, StateBackend } from 'deepagents';
 import { z } from 'zod';
 import type { ModelDescriptor, TokenUsage } from '@wfm/contracts';
-import type { BuilderChatMessage, BuilderChatResponse, BuilderChatRequest } from '@wfm/workflows';
+import type {
+  BuilderChatMessage,
+  BuilderChatResponse,
+  BuilderChatRequest,
+  BuilderStreamEvent,
+} from '@wfm/workflows';
 import { applyOperations, validateWorkflow } from '@wfm/workflows';
 import { createLogger } from '@wfm/observability';
 import type { LlmServices } from '../llm/index.ts';
@@ -82,6 +87,11 @@ export interface BuilderChatInput {
   request: BuilderChatRequest;
 }
 
+/** A turn the caller can walk away from: the canvas closing the connection ends the model call. */
+export interface BuilderStreamInput extends BuilderChatInput {
+  signal: AbortSignal;
+}
+
 export class BuilderAgent {
   readonly #store: BuilderMessageStore;
   readonly #llm: LlmServices;
@@ -130,7 +140,121 @@ export class BuilderAgent {
       throw error;
     }
 
-    const usage = usageOf(messages, provider, Date.now() - started);
+    return this.#finish({
+      workflowId,
+      tenantId,
+      request,
+      provider,
+      context,
+      messages,
+      latencyMs: Date.now() - started,
+    });
+  }
+
+  /**
+   * The same turn, told as it happens. Every event is drawn from the harness's
+   * own stream — the model's chunks and each node's update — so a caller sees a
+   * call start, the tool answer, and finally exactly the response `chat`
+   * returns, built by the same finalisation.
+   */
+  async *chatStream(input: BuilderStreamInput): AsyncGenerator<BuilderStreamEvent> {
+    const { workflowId, tenantId, request, signal } = input;
+    const history = await this.#store.listTurns(workflowId, tenantId, PROMPT_TURNS);
+    const provider = await this.#providerFor(tenantId, request.model);
+    await this.#store.appendTurn({
+      workflowId,
+      tenantId,
+      role: 'user',
+      content: request.message,
+      model: null,
+      applied: [],
+      rejected: [],
+    });
+
+    const context = buildContext(request, this.#llm);
+    const agent = createDeepAgent({
+      model: new BuilderChatModel({ provider }),
+      tools: builderTools(context),
+      systemPrompt: systemPrompt(this.#llm.catalogue.models()),
+      middleware: [summarization()],
+    });
+
+    const started = Date.now();
+    const messages: BaseMessage[] = [];
+    const running = new RunningCalls();
+    const where = { tenantId, workflowId };
+    try {
+      try {
+        const stream = await agent.stream(
+          { messages: [new HumanMessage(userContent(request, history))] },
+          { streamMode: ['messages', 'updates'], signal },
+        );
+        for await (const item of stream) {
+          const [mode, payload] = item;
+          if (mode === 'messages') {
+            const [message] = payload;
+            // The tool node's own messages travel this way too, and only the
+            // model's chunks carry text or a call being written.
+            if (!AIMessageChunk.isInstance(message)) continue;
+            const run = message.id ?? UNKNOWN_RUN;
+            if (typeof message.content === 'string' && message.content !== '') {
+              yield { type: 'token', run, text: message.content };
+            }
+            for (const fragment of message.tool_call_chunks ?? []) {
+              for (const event of running.absorb(run, fragment)) yield event;
+            }
+            continue;
+          }
+
+          for (const update of Object.values(payload)) {
+            for (const message of messagesOf(update)) {
+              messages.push(message);
+              if (!ToolMessage.isInstance(message)) continue;
+              const event = running.finish(message);
+              if (event !== null) yield event;
+            }
+            // The selection tools write to the same object the blocking route
+            // reports, so this is that focus and not a second derivation of it.
+            if (running.focusMoved(context.focus)) yield { type: 'focus', focus: context.focus };
+          }
+        }
+      } catch (error) {
+        await this.#record(provider, where, undefined, 'error');
+        throw error;
+      }
+
+      const response = await this.#finish({
+        workflowId,
+        tenantId,
+        request,
+        provider,
+        context,
+        messages,
+        latencyMs: Date.now() - started,
+      });
+      yield { type: 'done', response };
+    } catch (error) {
+      yield { type: 'error', message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * Everything a finished turn leaves behind, from whichever path ran it: the
+   * spend filed, the reply and the applied changes stored, and the response the
+   * canvas reads. A streaming turn and a blocking one cannot disagree, because
+   * this is the only place either of them builds it.
+   */
+  async #finish(input: {
+    workflowId: string;
+    tenantId: string;
+    request: BuilderChatRequest;
+    provider: LlmProvider;
+    context: BuilderToolContext;
+    messages: readonly BaseMessage[];
+    latencyMs: number;
+  }): Promise<BuilderChatResponse> {
+    const { workflowId, tenantId, request, provider, context, messages, latencyMs } = input;
+    const usage = usageOf(messages, provider, latencyMs);
     await this.#record(provider, { tenantId, workflowId }, usage, 'ok');
 
     const outcome = applyOperations(request.definition, request.layout, context.proposed);
@@ -182,6 +306,136 @@ export class BuilderAgent {
 }
 
 const logger = createLogger('builder-agent');
+
+/**
+ * A run whose id the stream did not supply. Every model call is expected to
+ * carry one, and a caller cannot tell two runs apart without it, so this is the
+ * degenerate case rather than a normal one.
+ */
+const UNKNOWN_RUN = 'model';
+
+/** Where a tool result is reported when the runtime left the tool unnamed. */
+const UNKNOWN_TOOL = 'unknown tool';
+
+/** One tool call as it is being written, fragment by fragment. */
+interface RunningCall {
+  id: string;
+  name: string;
+  /** The arguments so far, still a partial JSON string. */
+  arguments: string;
+  /** The arguments once they parsed, or null while they are still arriving. */
+  input: unknown;
+  announced: boolean;
+}
+
+/**
+ * The tool calls of a turn as the model writes them. A call is worth reporting
+ * twice: once when it has a name, which is when the canvas can show that
+ * something is about to run, and once when its arguments are complete JSON,
+ * which is when the user can read what it is about to do.
+ *
+ * `messages` carries the fragments and `updates` carries the results, so this
+ * holds the state that ties the two together by the vendor's own call id.
+ */
+class RunningCalls {
+  readonly #writing = new Map<string, RunningCall>();
+  readonly #byId = new Map<string, RunningCall>();
+  #nodes = 0;
+  #edges = 0;
+
+  /** The events one fragment of a call is worth, in the order they happen. */
+  *absorb(run: string, fragment: ToolCallChunkLike): Generator<BuilderStreamEvent> {
+    const key = `${run}:${fragment.index ?? 0}`;
+    const previous = this.#writing.get(key);
+    const call: RunningCall = {
+      id: previous?.id ?? '',
+      name: previous?.name ?? '',
+      arguments: previous?.arguments ?? '',
+      input: previous?.input ?? null,
+      announced: previous?.announced ?? false,
+    };
+    // The id and the name travel on the first fragment; the arguments arrive in
+    // pieces that only mean anything joined back together.
+    if (fragment.id !== undefined && fragment.id !== '') call.id = fragment.id;
+    if (fragment.name !== undefined && fragment.name !== '') call.name = fragment.name;
+    call.arguments += fragment.args ?? '';
+    this.#writing.set(key, call);
+    if (call.id === '') return;
+    this.#byId.set(call.id, call);
+
+    if (call.name === '') return;
+    if (!call.announced) {
+      call.announced = true;
+      yield { type: 'tool', call: { id: call.id, name: call.name, state: 'running', input: null, output: null, error: null } };
+    }
+    if (call.input !== null) return;
+    const parsed = parsedArguments(call.arguments);
+    if (parsed === null) return;
+    call.input = parsed;
+    yield { type: 'tool', call: { id: call.id, name: call.name, state: 'running', input: parsed, output: null, error: null } };
+  }
+
+  /** What a tool's answer is worth, or null when the runtime reported no call to match it to. */
+  finish(message: ToolMessage): BuilderStreamEvent | null {
+    const id = message.tool_call_id;
+    if (id === '') return null;
+    const call = this.#byId.get(id);
+    const name = call?.name ?? (message.name === undefined || message.name === '' ? UNKNOWN_TOOL : message.name);
+    const content = message.content;
+    // A tool answers with JSON when it has something to report and with its own
+    // words when it does not, and the canvas shows whichever arrived.
+    const text = typeof content === 'string' ? content : JSON.stringify(content);
+    const failed = message.status === 'error';
+    return {
+      type: 'tool',
+      call: {
+        id,
+        name,
+        state: failed ? 'failed' : 'done',
+        input: call?.input ?? null,
+        output: failed ? null : (parsedArguments(text) ?? content),
+        error: failed ? text : null,
+      },
+    };
+  }
+
+  /** Whether the canvas has something new to point at, which only a selection tool changes. */
+  focusMoved(focus: { nodeIds: string[]; edgeIds: string[] }): boolean {
+    const moved = focus.nodeIds.length !== this.#nodes || focus.edgeIds.length !== this.#edges;
+    this.#nodes = focus.nodeIds.length;
+    this.#edges = focus.edgeIds.length;
+    return moved;
+  }
+}
+
+/** The fields of a tool-call fragment this layer reads; the runtime's own chunk carries more. */
+interface ToolCallChunkLike {
+  id?: string;
+  name?: string;
+  args?: string;
+  index?: number;
+}
+
+/** The arguments once they are a complete JSON value, or null while they are still arriving. */
+function parsedArguments(raw: string): unknown {
+  if (raw.trim() === '') return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The messages one node's update carries. An update is whatever a node returned,
+ * so this reads the one field that matters and ignores the rest.
+ */
+function messagesOf(update: unknown): readonly BaseMessage[] {
+  if (update === null || typeof update !== 'object' || !('messages' in update)) return [];
+  const { messages } = update;
+  if (!Array.isArray(messages)) return [];
+  return messages.filter(isBaseMessage);
+}
 
 /**
  * The graph the tools read and the list they write to. The definition comes

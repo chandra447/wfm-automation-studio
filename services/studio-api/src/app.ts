@@ -188,6 +188,20 @@ export const app = new Elysia()
     await (await engineOf(createEngineFromEnv)).getWorkflow(actor, params.workflowId);
     return (await builderHandlers()).chat(actor, params.workflowId, builderChatRequestSchema.parse(body));
   })
+  .post('/workflows/:workflowId/chat/stream', async function* streamChat({ headers, params, body, request }) {
+    const actor = actorOf(headers);
+    await (await engineOf(createEngineFromEnv)).getWorkflow(actor, params.workflowId);
+    const controller = new AbortController();
+    request.signal.addEventListener('abort', () => controller.abort());
+    for await (const event of (await builderHandlers()).chatStream(
+      actor,
+      params.workflowId,
+      builderChatRequestSchema.parse(body),
+      controller.signal,
+    )) {
+      yield `data: ${JSON.stringify(event)}\n\n`;
+    }
+  })
   .get('/workflows/:workflowId/chat', async ({ headers, params }) => {
     const actor = actorOf(headers);
     await (await engineOf(createEngineFromEnv)).getWorkflow(actor, params.workflowId);

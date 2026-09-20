@@ -73,6 +73,30 @@ export interface LlmCompletion {
 }
 
 /**
+ * One fragment of a tool call. A vendor sends the id and the name on the first
+ * fragment and the arguments a few characters at a time; `index` is what ties
+ * the fragments of one call together when a model calls several at once.
+ */
+export interface LlmToolCallDelta {
+  index: number;
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+/** A piece of a completion as it arrives. Both fields are always present, empty when nothing of that kind arrived. */
+export interface LlmStreamDelta {
+  content: string;
+  toolCalls: readonly LlmToolCallDelta[];
+}
+
+/** Deltas as the vendor sends them; iterating to the end settles `completion`. */
+export interface LlmStream {
+  deltas: AsyncIterable<LlmStreamDelta>;
+  completion: Promise<LlmCompletion>;
+}
+
+/**
  * A vendor can spend tens of seconds on a large prompt before the body starts,
  * so this is generous. A body read that outlives it is reported as a timeout,
  * not as a malformed response.
@@ -104,6 +128,32 @@ export abstract class LlmProvider {
   abstract readonly kind: ProviderKind;
   abstract readonly model: string;
   abstract complete(request: LlmRequest): Promise<LlmCompletion>;
+
+  /**
+   * The completion as it arrives. A provider with no streaming protocol is
+   * still a stream: one delta carrying everything, so a caller has one shape to
+   * consume whether or not the vendor under it streams. The default is concrete
+   * rather than abstract for exactly that reason.
+   */
+  stream(request: LlmRequest): LlmStream {
+    const completion = this.complete(request);
+    claimRejection(completion);
+    return {
+      deltas: (async function* () {
+        const answer = await completion;
+        yield {
+          content: answer.content,
+          toolCalls: (answer.toolCalls ?? []).map((call, index) => ({
+            index,
+            id: call.id,
+            name: call.name,
+            arguments: call.arguments,
+          })),
+        };
+      })(),
+      completion,
+    };
+  }
 }
 
 interface HttpPost {
@@ -121,11 +171,17 @@ interface HttpResponse {
   latencyMs: number;
 }
 
-async function postJson(request: HttpPost): Promise<HttpResponse> {
-  const started = Date.now();
-  let response: Response;
+/**
+ * A caller that stops reading the deltas never reaches the rejection, and a
+ * promise nobody handles is a crash rather than a missed event.
+ */
+function claimRejection(completion: Promise<LlmCompletion>): void {
+  completion.catch(() => {});
+}
+
+async function post(request: HttpPost): Promise<Response> {
   try {
-    response = await fetch(request.url, {
+    return await fetch(request.url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...request.headers },
       body: JSON.stringify(request.body),
@@ -135,7 +191,11 @@ async function postJson(request: HttpPost): Promise<HttpResponse> {
     const reason = error instanceof Error ? error.message : String(error);
     throw new LlmProviderError(`${request.label} could not be reached: ${reason}`, { permanent: false });
   }
+}
 
+async function postJson(request: HttpPost): Promise<HttpResponse> {
+  const started = Date.now();
+  const response = await post(request);
   let text: string;
   try {
     text = await response.text();
@@ -297,6 +357,75 @@ const chatCompletionSchema = z.object({
   usage: z.object({ prompt_tokens: z.int().nonnegative(), completion_tokens: z.int().nonnegative() }),
 });
 
+/** One call's fragments: every field but `index` may be absent on a given frame. */
+const streamToolCallSchema = z.object({
+  index: z.int().nonnegative(),
+  id: z.string().optional(),
+  function: z.object({ name: z.string().optional(), arguments: z.string().optional() }).optional(),
+});
+
+/**
+ * A streamed frame, validated like the whole body is. Every field is optional
+ * because a vendor may send a frame this layer has nothing to do with — the
+ * usage frame carries no choices at all — and because a vendor may add fields
+ * mid-stream; an unrecognised frame is skipped, not fatal.
+ */
+const streamFrameSchema = z.object({
+  choices: z
+    .array(
+      z.object({
+        delta: z
+          .object({
+            content: z.string().nullish(),
+            tool_calls: z.array(streamToolCallSchema).optional(),
+          })
+          .optional(),
+      }),
+    )
+    .optional(),
+  usage: z
+    .object({ prompt_tokens: z.int().nonnegative(), completion_tokens: z.int().nonnegative() })
+    .nullish(),
+});
+
+/**
+ * The `data:` payloads of a server-sent event body, in order, as they arrive.
+ * The final `[DONE]` is a terminator rather than a frame, so it ends the read.
+ */
+async function* sseData(body: ReadableStream<Uint8Array>, label: string, status: number): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let done = false;
+  while (!done) {
+    let chunk: { done: boolean; value: Uint8Array | undefined };
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      // The timeout covers the whole stream, so a vendor that stalls halfway
+      // through the body lands here rather than hanging the caller.
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new LlmProviderError(`${label} sent status ${status} but the stream stopped arriving: ${reason}`, {
+        permanent: false,
+        status,
+      });
+    }
+    done = chunk.done;
+    buffer += done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
+    const frames = buffer.split('\n\n');
+    // A frame only counts once its blank line has arrived; the rest is a partial.
+    buffer = done ? '' : (frames.pop() ?? '');
+    for (const frame of frames) {
+      for (const line of frame.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice('data: '.length);
+        if (payload === '[DONE]') return;
+        yield payload;
+      }
+    }
+  }
+}
+
 export interface OpenAiCompatibleOptions {
   /** `platform` when the studio's own endpoint serves the call. */
   kind: ProviderKind;
@@ -332,33 +461,12 @@ export class OpenAiCompatibleProvider extends LlmProvider {
 
   async complete(request: LlmRequest): Promise<LlmCompletion> {
     const label = `${this.kind} provider`;
-    const tools = declaredTools(request);
     const response = await postJson({
       url: `${this.#baseUrl}/chat/completions`,
       headers: { authorization: `Bearer ${this.#apiKey}` },
       timeoutMs: this.#timeoutMs,
       label,
-      body: {
-        model: this.model,
-        messages: [
-          { role: 'system', content: systemPrompt(request) },
-          ...openAiTurns(request),
-        ],
-        // JSON mode asks for one JSON object as the message content, which is
-        // exactly what a caller with tools does not want: the model cannot both
-        // be constrained to an object and choose to call something, and it
-        // answers with JSON shaped like a call instead of making one.
-        ...(this.#jsonMode && tools === undefined ? { response_format: { type: 'json_object' } } : {}),
-        ...(tools === undefined
-          ? {}
-          : {
-              tools: tools.map((tool) => ({
-                type: 'function',
-                function: { name: tool.name, description: tool.description, parameters: tool.parameters },
-              })),
-              tool_choice: 'auto',
-            }),
-      },
+      body: this.#body(request, false),
     });
     if (response.status !== 200) throw failure(label, response);
     const body = decode(chatCompletionSchema, response, label);
@@ -380,6 +488,142 @@ export class OpenAiCompatibleProvider extends LlmProvider {
               arguments: call.function.arguments,
             })),
           }),
+    };
+  }
+
+  /**
+   * The same call, read as it arrives. The body is the same one `complete`
+   * sends, plus the flags that ask for a stream and for the usage report the
+   * final frame carries; the completion assembled from the deltas is the one
+   * `complete` would have returned, so a caller can swap one for the other.
+   */
+  override stream(request: LlmRequest): LlmStream {
+    const label = `${this.kind} provider`;
+    const started = Date.now();
+    let settle: (completion: LlmCompletion) => void = () => {};
+    let fail: (error: unknown) => void = () => {};
+    const completion = new Promise<LlmCompletion>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
+    claimRejection(completion);
+    return { deltas: this.#deltas(request, label, started, settle, fail), completion };
+  }
+
+  async *#deltas(
+    request: LlmRequest,
+    label: string,
+    started: number,
+    settle: (completion: LlmCompletion) => void,
+    fail: (error: unknown) => void,
+  ): AsyncGenerator<LlmStreamDelta> {
+    let settled = false;
+    try {
+      const response = await post({
+        url: `${this.#baseUrl}/chat/completions`,
+        headers: { authorization: `Bearer ${this.#apiKey}` },
+        timeoutMs: this.#timeoutMs,
+        label,
+        body: this.#body(request, true),
+      });
+      if (response.status !== 200) {
+        const text = await response.text().catch(() => '');
+        throw failure(label, { status: response.status, text, latencyMs: Date.now() - started });
+      }
+      if (response.body === null) {
+        throw new LlmProviderError(`${label} returned ${response.status} with no stream to read`, {
+          permanent: false,
+          status: response.status,
+        });
+      }
+
+      const content: string[] = [];
+      // Keyed by the vendor's own index, which is what says which fragments are
+      // one call when a model calls several at once.
+      const calls = new Map<number, LlmToolCallDelta>();
+      let inputTokens = 0;
+      let outputTokens = 0;
+      for await (const payload of sseData(response.body, label, response.status)) {
+        const frame = streamFrameSchema.safeParse(parseJson(payload));
+        if (!frame.success) continue;
+        const usage = frame.data.usage;
+        if (usage !== undefined && usage !== null) {
+          inputTokens = usage.prompt_tokens;
+          outputTokens = usage.completion_tokens;
+        }
+        const delta = frame.data.choices?.at(0)?.delta;
+        if (delta === undefined) continue;
+        const fragments: LlmToolCallDelta[] = [];
+        for (const fragment of delta.tool_calls ?? []) {
+          const piece: LlmToolCallDelta = {
+            index: fragment.index,
+            id: fragment.id ?? '',
+            name: fragment.function?.name ?? '',
+            arguments: fragment.function?.arguments ?? '',
+          };
+          const previous = calls.get(piece.index);
+          calls.set(
+            piece.index,
+            previous === undefined
+              ? piece
+              : {
+                  index: piece.index,
+                  id: previous.id + piece.id,
+                  name: previous.name + piece.name,
+                  arguments: previous.arguments + piece.arguments,
+                },
+          );
+          fragments.push(piece);
+        }
+        const text = delta.content ?? '';
+        if (text === '' && fragments.length === 0) continue;
+        content.push(text);
+        yield { content: text, toolCalls: fragments };
+      }
+
+      const toolCalls = [...calls.values()].sort((left, right) => left.index - right.index);
+      settle({
+        content: content.join(''),
+        inputTokens,
+        outputTokens,
+        latencyMs: Date.now() - started,
+        model: this.model,
+        ...(toolCalls.length === 0
+          ? {}
+          : { toolCalls: toolCalls.map((call) => ({ id: call.id, name: call.name, arguments: call.arguments })) }),
+      });
+      settled = true;
+    } catch (error) {
+      fail(error);
+      settled = true;
+      throw error;
+    } finally {
+      if (!settled) fail(new LlmProviderError(`${label} stream was abandoned before it finished`, { permanent: false }));
+    }
+  }
+
+  /**
+   * The request both transports send. JSON mode asks for one JSON object as the
+   * message content, which is exactly what a caller with tools does not want:
+   * the model cannot both be constrained to an object and choose to call
+   * something, and it answers with JSON shaped like a call instead of making one.
+   */
+  #body(request: LlmRequest, streaming: boolean): unknown {
+    const tools = declaredTools(request);
+    return {
+      model: this.model,
+      messages: [{ role: 'system', content: systemPrompt(request) }, ...openAiTurns(request)],
+      ...(this.#jsonMode && tools === undefined ? { response_format: { type: 'json_object' } } : {}),
+      ...(tools === undefined
+        ? {}
+        : {
+            tools: tools.map((tool) => ({
+              type: 'function',
+              function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+            })),
+            tool_choice: 'auto',
+          }),
+      ...(streaming ? { stream: true, stream_options: { include_usage: true } } : {}),
     };
   }
 }

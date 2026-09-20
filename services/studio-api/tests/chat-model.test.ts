@@ -1,11 +1,18 @@
 import { describe, expect, test } from 'bun:test';
-import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
+import { AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import { tool } from '@langchain/core/tools';
 import { createDeepAgent } from 'deepagents';
 import { z } from 'zod';
 import { BuilderChatModel } from '../src/builder/chat-model.ts';
 import { LlmProvider } from '../src/llm/provider.ts';
-import type { LlmCompletion, LlmRequest, LlmToolSpec, ProviderKind } from '../src/llm/provider.ts';
+import type {
+  LlmCompletion,
+  LlmRequest,
+  LlmStream,
+  LlmStreamDelta,
+  LlmToolSpec,
+  ProviderKind,
+} from '../src/llm/provider.ts';
 
 /**
  * The provider boundary as the adapter sees it: the next scripted answer, and
@@ -33,6 +40,67 @@ class StubProvider extends LlmProvider {
 /** What a vendor reports for a completion, minus the part a test cares about. */
 function answer(fields: Partial<LlmCompletion>): LlmCompletion {
   return { content: '', inputTokens: 11, outputTokens: 7, latencyMs: 3, model: 'stub-model', ...fields };
+}
+
+/**
+ * A provider that streams what it was scripted to stream. A real vendor sends
+ * the id and the name on a call's first fragment and its arguments in pieces,
+ * which is the shape the adapter has to put back together.
+ */
+class StubStreamProvider extends LlmProvider {
+  readonly kind: ProviderKind = 'openai-compatible';
+  readonly model = 'stub-model';
+  readonly requests: LlmRequest[] = [];
+  readonly #deltas: readonly LlmStreamDelta[];
+  readonly #completion: LlmCompletion;
+
+  constructor(deltas: readonly LlmStreamDelta[], completion: LlmCompletion) {
+    super();
+    this.#deltas = deltas;
+    this.#completion = completion;
+  }
+
+  async complete(request: LlmRequest): Promise<LlmCompletion> {
+    this.requests.push(request);
+    return this.#completion;
+  }
+
+  override stream(request: LlmRequest): LlmStream {
+    this.requests.push(request);
+    const { deltas, completion } = { deltas: this.#deltas, completion: this.#completion };
+    return {
+      deltas: (async function* () {
+        for (const delta of deltas) yield delta;
+      })(),
+      completion: Promise.resolve(completion),
+    };
+  }
+}
+
+/** One tool call's fragments: prose, then the call's id and name, then its arguments in two pieces. */
+const FRAGMENTS: readonly LlmStreamDelta[] = [
+  { content: 'Let me ', toolCalls: [] },
+  { content: 'check.', toolCalls: [] },
+  { content: '', toolCalls: [{ index: 0, id: 'call_1', name: 'add_shift', arguments: '' }] },
+  { content: '', toolCalls: [{ index: 0, id: '', name: '', arguments: '{"employeeId":' }] },
+  { content: '', toolCalls: [{ index: 0, id: '', name: '', arguments: '"e1"}' }] },
+];
+
+const STREAMED = answer({
+  content: 'Let me check.',
+  inputTokens: 40,
+  outputTokens: 12,
+  toolCalls: [{ id: 'call_1', name: 'add_shift', arguments: '{"employeeId":"e1"}' }],
+});
+
+/** The chunks a stream produced, joined into the one message a caller ends up with. */
+async function assemble(model: BuilderChatModel): Promise<AIMessageChunk> {
+  let assembled: AIMessageChunk | undefined;
+  for await (const chunk of await model.stream([new HumanMessage('Add a shift for e1')])) {
+    assembled = assembled === undefined ? chunk : assembled.concat(chunk);
+  }
+  if (assembled === undefined) throw new Error('the model streamed nothing at all');
+  return assembled;
 }
 
 const ADD_SHIFT: LlmToolSpec = {
@@ -163,6 +231,36 @@ describe('builder chat model', () => {
       properties: { employeeId: { type: 'string' } },
       required: ['employeeId'],
     });
+  });
+});
+
+describe('builder chat model streaming', () => {
+  test('prose arrives in order and a call written across fragments assembles into one call', async () => {
+    const model = new BuilderChatModel({ provider: new StubStreamProvider(FRAGMENTS, STREAMED) });
+
+    const texts: string[] = [];
+    let assembled: AIMessageChunk | undefined;
+    for await (const chunk of await model.stream([new HumanMessage('Add a shift for e1')])) {
+      texts.push(chunk.text);
+      assembled = assembled === undefined ? chunk : assembled.concat(chunk);
+    }
+
+    expect(texts.filter((text) => text !== '')).toEqual(['Let me ', 'check.']);
+    expect(assembled?.content).toBe('Let me check.');
+    // The fragments are one call, with the name that travelled on the first of
+    // them and the arguments the later ones completed.
+    expect(assembled?.tool_calls).toMatchObject([{ id: 'call_1', name: 'add_shift', args: { employeeId: 'e1' } }]);
+  });
+
+  test('a streamed call records the vendor usage once, on the message the caller ends up with', async () => {
+    const model = new BuilderChatModel({ provider: new StubStreamProvider(FRAGMENTS, STREAMED) });
+
+    const assembled = await assemble(model);
+
+    expect(model.usage).toEqual({ inputTokens: 40, outputTokens: 12, calls: 1 });
+    // The turn's own accounting reads the messages the graph ends with, so the
+    // vendor's report has to reach the assembled message and not just the counter.
+    expect(assembled.usage_metadata).toMatchObject({ input_tokens: 40, output_tokens: 12, total_tokens: 52 });
   });
 });
 

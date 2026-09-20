@@ -342,9 +342,10 @@ before `interrupt()` re-runs on resume, so every write in that node is an upsert
 ### 7.7 Studio API (port 4103)
 
 `GET /triggers` · `GET|POST /workflows` · `GET /workflows/:id` · `PUT /workflows/:id/draft` ·
-`POST /workflows/:id/publish` · `GET|POST /workflows/:id/chat` · `GET /runs` · `GET /runs/:runId` ·
-`GET /runs/:runId/stream` (SSE) · `GET /approvals` · `POST /approvals/:approvalId/decision`
-(decision, reason, and optional steering feedback) · `POST /simulator/:scenario`.
+`POST /workflows/:id/publish` · `GET|POST /workflows/:id/chat` · `POST /workflows/:id/chat/stream`
+(SSE) · `GET /runs` · `GET /runs/:runId` · `GET /runs/:runId/stream` (SSE) · `GET /approvals` ·
+`POST /approvals/:approvalId/decision` (decision, reason, and optional steering feedback) ·
+`POST /simulator/:scenario`.
 
 The simulator drives the domain services over HTTP, never the bus, so the demo exercises the real path.
 
@@ -442,6 +443,43 @@ thresholds are the platform's rather than the harness's computed defaults, becau
 from a model profile LangChain ships and these models are described by `config/models.jsonl`. The
 summary is written by the answering model, so no second provider has to resolve, and the summary call
 is an ordinary model call: it lands in `llm_calls` with everything else.
+
+### 7.11.1 The turn streams
+
+A turn is a conversation with a model that reads, edits, reads back and then answers, and it can take
+a minute. `POST /workflows/:id/chat/stream` sends it as it happens, framed as SSE over `fetch` — the
+same pattern `/runs/:runId/stream` established, chosen there because EventSource cannot send actor
+headers. The blocking route stays for callers that want one answer.
+
+| Event | When | What the panel does |
+|---|---|---|
+| `tool` | once when the model asks for the call, again when it answers | shows the call with its arguments and its result, in place |
+| `token` | per model delta | appends to the run currently arriving |
+| `focus` | when a selection tool answers | frames and rings the nodes, mid-turn |
+| `done` | once, at the end | carries the same `BuilderChatResponse` the blocking route returns |
+| `error` | on failure | replaces the in-flight turn with the failure |
+
+The events are declared once, in `packages/workflows/src/builder/chat.ts`, and both halves import
+them. `done` carrying the blocking route's own response is what keeps the two from drifting: they
+share the turn's finalisation rather than each building a response.
+
+Two details are worth stating because they are not obvious:
+
+- **A token names the model run that produced it.** One turn makes several model calls — a preamble
+  beside the tool calls, and the harness's summary when the conversation is long — and only the last
+  is the answer. The panel renders the run currently arriving and drops the previous run's text, which
+  is what keeps internal chatter out of the transcript.
+- **Token streaming reaches the vendor, not just the graph.** The provider boundary gained
+  `stream(request): { deltas, completion }`, with the completion identical to what `complete()`
+  returns, so accounting, error mapping and callers are unchanged. The default implementation is
+  concrete — one delta carrying the whole body — so a provider without a streaming protocol still
+  satisfies the contract; only the OpenAI-compatible provider overrides it, reading SSE and asking
+  for `stream_options: { include_usage: true }` so the tokens recorded are the vendor's own report.
+
+The chat is rendered with AI Elements components, used as presentation: the `ai` package is a
+type-only dependency, and the transport is ours. Their Workflow section is a React Flow wrapper,
+which is the library this canvas already uses, so the canvas keeps its own node cards — those are
+generated from each kind's declaration and a generic card would discard the extension story.
 
 
 ## 8. Reliability model

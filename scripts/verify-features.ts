@@ -690,6 +690,97 @@ async function checkAgentNode(): Promise<void> {
   }
 }
 
+/* 15. the builder chat streams: prose and tool calls arrive before the turn ends */
+async function checkBuilderStream(): Promise<void> {
+  await call('/provider-settings', { method: 'PUT', body: { kind: 'platform', model: FAST_MODEL } });
+  const created = await call('/workflows', {
+    method: 'POST',
+    body: { name: `Builder stream check ${Date.now()}`, fromWorkflowId: COVERAGE_WORKFLOW },
+  });
+  const workflowId = String(asRecord(created.body)['workflowId'] ?? '');
+  if (created.status >= 400 || workflowId === '') {
+    record('builder: a turn streams its prose and its tool calls before it ends', false, `POST /workflows returned ${created.status}`);
+    return;
+  }
+
+  try {
+    const detail = asRecord((await call(`/workflows/${workflowId}`)).body);
+    const version =
+      asArray(detail['versions']).map(asRecord).find((candidate) => candidate['status'] === 'draft') ??
+      asArray(detail['versions']).map(asRecord)[0];
+
+    const started = Date.now();
+    const response = await fetch(`${STUDIO_API}/workflows/${workflowId}/chat/stream`, {
+      method: 'POST',
+      headers: { ...actor('roster_manager'), accept: 'text/event-stream' },
+      body: JSON.stringify({
+        message: 'Point at the two human approval nodes, then say in one sentence what each decides.',
+        definition: version?.['definition'],
+        layout: version?.['layout'],
+        eventType: 'shift.cancelled',
+        model: FAST_MODEL,
+      }),
+      signal: AbortSignal.timeout(240_000),
+    });
+
+    let firstTextAt: number | null = null;
+    let tokens = 0;
+    let doneAt: number | null = null;
+    let finished: Record<string, unknown> | null = null;
+    const tools = new Map<string, string>();
+    const startedCalls = new Set<string>();
+
+    if (response.body !== null) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+        for (const frame of frames) {
+          const line = frame.split('\n').find((candidate) => candidate.startsWith('data: '));
+          if (line === undefined) continue;
+          const event = asRecord(JSON.parse(line.slice('data: '.length)));
+          const at = Date.now() - started;
+          if (event['type'] === 'token') {
+            tokens += 1;
+            firstTextAt ??= at;
+          }
+          if (event['type'] === 'tool') {
+            const tool = asRecord(event['call']);
+            const id = String(tool['id']);
+            if (tool['state'] === 'running' && !tools.has(id)) startedCalls.add(id);
+            tools.set(id, String(tool['state']));
+          }
+          if (event['type'] === 'done') {
+            doneAt = at;
+            finished = asRecord(event['response']);
+          }
+        }
+      }
+    }
+
+    const answered = [...startedCalls].filter((id) => tools.get(id) === 'done' || tools.get(id) === 'failed');
+    const reply = String(finished?.['reply'] ?? '');
+    record(
+      'builder: a turn streams its prose and its tool calls before it ends',
+      response.status === 200 &&
+        tokens >= 1 &&
+        firstTextAt !== null &&
+        doneAt !== null &&
+        doneAt - firstTextAt > 300 &&
+        answered.length > 0 &&
+        reply.length > 0,
+      `status=${response.status} tokenFrames=${tokens} firstTextAt=${firstTextAt}ms turnEndedAt=${doneAt}ms toolCalls=${tools.size} seenRunningThenAnswered=${answered.length} reply="${reply.replace(/\s+/g, ' ').slice(0, 100)}"`,
+    );
+  } finally {
+    await call(`/workflows/${workflowId}`, { method: 'DELETE' });
+  }
+}
+
 /* leave the demo configured the way a reviewer will find it */
 async function restorePlatformProvider(): Promise<void> {
   const restored = await call('/provider-settings', { method: 'PUT', body: { kind: 'platform', model: CATALOGUE_MODEL } });
@@ -715,7 +806,8 @@ const steps: Array<[string, () => Promise<void>]> = [
   ['12. Steering from an approval', checkSteering],
   ['13. Conversational builder', checkBuilderChat],
   ['14. Agent node', checkAgentNode],
-  ['15. Leave the demo on the platform provider', restorePlatformProvider],
+  ['15. Streaming builder chat', checkBuilderStream],
+  ['16. Leave the demo on the platform provider', restorePlatformProvider],
 ];
 
 for (const [title, run] of steps) {

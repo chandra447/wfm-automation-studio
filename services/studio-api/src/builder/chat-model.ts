@@ -1,17 +1,27 @@
 import { BaseChatModel, type BaseChatModelCallOptions, type BindToolsInput } from '@langchain/core/language_models/chat_models';
+import type { CallbackManagerForLLMRun } from '@langchain/core/callbacks/manager';
 import {
   AIMessage,
+  AIMessageChunk,
   type BaseMessage,
   type StandardMessageStructure,
   ToolMessage,
   type ToolCall,
+  type ToolCallChunk,
   type UsageMetadata,
 } from '@langchain/core/messages';
-import type { ChatResult } from '@langchain/core/outputs';
+import { ChatGenerationChunk, type ChatResult } from '@langchain/core/outputs';
 import { isStructuredTool, type StructuredToolInterface } from '@langchain/core/tools';
 import { toJsonSchema } from '@langchain/core/utils/json_schema';
 import { z } from 'zod';
-import type { LlmCompletion, LlmProvider, LlmRequest, LlmToolSpec, LlmTurn } from '../llm/provider.ts';
+import type {
+  LlmCompletion,
+  LlmProvider,
+  LlmRequest,
+  LlmToolCallDelta,
+  LlmToolSpec,
+  LlmTurn,
+} from '../llm/provider.ts';
 
 /**
  * The LangChain face of our own provider boundary. Deep Agents drives its agent
@@ -145,6 +155,72 @@ export class BuilderChatModel extends BaseChatModel {
         },
       ],
     };
+  }
+
+  /**
+   * The same call, as LangChain's chunked shape. Prose arrives a token at a
+   * time; a tool call arrives as fragments that carry the vendor's own index,
+   * which is what lets a caller watch a call start before the tool has run.
+   *
+   * The chunks assemble into the message `_generate` returns, usage included,
+   * so the two paths differ only in when a caller sees the answer.
+   */
+  override async *_streamResponseChunks(
+    messages: BaseMessage[],
+    options: this['ParsedCallOptions'],
+    runManager?: CallbackManagerForLLMRun,
+  ): AsyncGenerator<ChatGenerationChunk> {
+    const stream = this.provider.stream(requestFor(messages, this.toolSpecs, this.toolChoice, options.tool_choice));
+    for await (const delta of stream.deltas) {
+      const toolCallChunks = toolCallChunksOf(delta.toolCalls);
+      if (delta.content === '' && toolCallChunks.length === 0) continue;
+      yield* this.#report(
+        new ChatGenerationChunk({
+          text: delta.content,
+          message: new AIMessageChunk({
+            content: delta.content,
+            ...(toolCallChunks.length === 0 ? {} : { tool_call_chunks: toolCallChunks }),
+          }),
+        }),
+        runManager,
+      );
+    }
+
+    const completion = await stream.completion;
+    // Recorded once per model call, from the vendor's own report, whether the
+    // call streamed or not: the accounting prices the tokens the vendor billed.
+    this.usage.inputTokens += completion.inputTokens;
+    this.usage.outputTokens += completion.outputTokens;
+    this.usage.calls += 1;
+    // The vendor reports what the call cost only once it is over, so usage
+    // travels on its own chunk at the end. It is also the chunk that keeps a
+    // silent completion from being a stream that yielded nothing.
+    yield* this.#report(
+      new ChatGenerationChunk({
+        text: '',
+        message: new AIMessageChunk<StandardMessageStructure>({
+          content: '',
+          usage_metadata: {
+            input_tokens: completion.inputTokens,
+            output_tokens: completion.outputTokens,
+            total_tokens: completion.inputTokens + completion.outputTokens,
+          },
+          response_metadata: { model_name: completion.model, model_provider: this.provider.kind },
+        }),
+      }),
+      runManager,
+    );
+  }
+
+  /** A chunk handed to the caller and to the callback manager, in that order, as LangChain expects. */
+  async *#report(
+    chunk: ChatGenerationChunk,
+    runManager: CallbackManagerForLLMRun | undefined,
+  ): AsyncGenerator<ChatGenerationChunk> {
+    yield chunk;
+    await runManager?.handleLLMNewToken(chunk.text, { prompt: 0, completion: 0 }, undefined, undefined, undefined, {
+      chunk,
+    });
   }
 }
 
@@ -280,6 +356,21 @@ function messageFor(completion: LlmCompletion, providerKind: string): AIMessage 
     usage_metadata: usage,
     response_metadata: { model_name: completion.model, model_provider: providerKind },
   });
+}
+
+/**
+ * The vendor's fragments as LangChain's chunk shape. The id and the name travel
+ * on the first fragment only, so a fragment without them leaves the accumulated
+ * call's own values alone; the arguments are a partial JSON string that the
+ * runtime accumulates and parses when the call is complete.
+ */
+function toolCallChunksOf(fragments: readonly LlmToolCallDelta[]): ToolCallChunk[] {
+  return fragments.map((fragment) => ({
+    index: fragment.index,
+    ...(fragment.id === '' ? {} : { id: fragment.id }),
+    ...(fragment.name === '' ? {} : { name: fragment.name }),
+    ...(fragment.arguments === '' ? {} : { args: fragment.arguments }),
+  }));
 }
 
 /**

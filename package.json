@@ -14,7 +14,7 @@
     "dev": "bun run scripts/dev.ts",
     "seed": "bun run scripts/seed.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/studio-web/tsconfig.json",
-    "test": "bun test packages services",
+    "test": "bun test packages services apps/studio-web",
     "e2e": "bun test tests/e2e",
     "check": "bun run typecheck && bun run test"
   },

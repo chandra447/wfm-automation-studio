@@ -75,6 +75,41 @@ export const builderChatResponseSchema = z.object({
   tokens: tokenUsageSchema,
 });
 
+/**
+ * A tool call as the transcript shows it while the turn is still running. The
+ * fields say what the call has at this moment rather than narrating a
+ * lifecycle: `input` is null until the model has finished writing the
+ * arguments, and `output` is null until the tool answers.
+ */
+export const builderToolCallSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  state: z.enum(['running', 'done', 'failed']),
+  input: z.unknown().nullable(),
+  output: z.unknown().nullable(),
+  error: z.string().nullable(),
+});
+
+/**
+ * What the builder chat sends while a turn is in flight. The turn ends with
+ * `done`, carrying exactly the response the blocking route returns, so a client
+ * that only wants the result can ignore everything before it.
+ *
+ * `token` names the model run that produced it. A turn makes several model
+ * calls — a preamble beside the tool calls, and the summary the harness writes
+ * when the conversation is long — and only the last one is the answer, which is
+ * why the run travels with the text instead of the client guessing.
+ */
+export const builderStreamEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('token'), run: z.string(), text: z.string() }),
+  z.object({ type: z.literal('tool'), call: builderToolCallSchema }),
+  z.object({ type: z.literal('focus'), focus: builderFocusSchema }),
+  z.object({ type: z.literal('done'), response: builderChatResponseSchema }),
+  z.object({ type: z.literal('error'), message: z.string() }),
+]);
+
+export type BuilderToolCall = z.infer<typeof builderToolCallSchema>;
+export type BuilderStreamEvent = z.infer<typeof builderStreamEventSchema>;
 export type CanvasLayoutPayload = z.infer<typeof canvasLayoutSchema>;
 export type BuilderFocus = z.infer<typeof builderFocusSchema>;
 export type BuilderChatRequest = z.infer<typeof builderChatRequestSchema>;
