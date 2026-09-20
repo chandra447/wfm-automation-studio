@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { LogoMark } from './brand/logo-mark';
 import { demoActors, useDemoActor } from './demo-actor-provider';
 import { cn } from '@/lib/utils';
 
@@ -20,10 +21,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen flex-col">
       <header className="flex items-center gap-6 border-b border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-6 py-3">
-        <div className="flex items-center gap-2">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-[var(--color-primary)]" />
-          <span className="text-sm font-semibold tracking-tight">WFM Automation Studio</span>
-        </div>
+        <Link href="/" className="flex items-center gap-2 text-[var(--color-primary)]">
+          <LogoMark size={30} />
+          <span className="text-sm font-semibold tracking-tight text-[var(--color-ink)]">
+            WFM Automation Studio
+          </span>
+        </Link>
 
         <nav className="flex items-center gap-1">
           {links.map((link) => {

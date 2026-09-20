@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { motion } from 'motion/react';
+import { BrandWatermark } from '@/components/brand/logo-mark';
 import { demoWorkflows, type CanvasLayout, type WorkflowDefinition } from '@wfm/workflows';
 import { apiFetch, ApiFailure } from '@/lib/api';
 import { useDemoActor } from '@/components/demo-actor-provider';
@@ -97,6 +98,7 @@ function GridBackdrop() {
         transition={{ duration: 11, repeat: Infinity, ease: 'easeInOut' }}
       />
       <div className="absolute inset-0 bg-[linear-gradient(var(--color-canvas-grid)_1px,transparent_1px),linear-gradient(90deg,var(--color-canvas-grid)_1px,transparent_1px)] bg-[size:48px_48px] opacity-25 [mask-image:linear-gradient(to_bottom,black,transparent)]" />
+      <BrandWatermark />
     </div>
   );
 }

@@ -1,3 +1,5 @@
+<img src="docs/logo-wfm.svg" alt="" width="56" align="left" hspace="12" vspace="6" />
+
 # WFM Automation Studio
 
 A working slice of an agentic workflow platform for workforce management. Two domain services publish events. Customers compose workflows over those events on a drag-and-drop canvas. AI reasons, deterministic policy constrains, a human decides, and the domain service performs the write.

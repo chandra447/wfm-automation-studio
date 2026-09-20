@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import type { Approval, Dashboard, RunStatus, RunSummary, SimulatorResponse, SimulatorScenario } from '@wfm/contracts';
 import { apiFetch } from '@/lib/api';
+import { BrandWatermark } from '@/components/brand/logo-mark';
 import { useDemoActor } from '@/components/demo-actor-provider';
 import { ApiNotice } from '@/components/runs/api-notice';
 import { RunStatusPill } from '@/components/runs/run-status-pill';
@@ -183,7 +184,8 @@ export default function DashboardPage() {
   const pendingCount = approvals === null ? null : approvals.length;
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6 px-6 py-8">
+    <div className="relative isolate mx-auto flex max-w-5xl flex-col gap-6 px-6 py-8">
+      <BrandWatermark className="-z-10" />
       <header className="flex flex-wrap items-start gap-4">
         <div className="flex-1">
           <h1 className="text-lg font-semibold">Dashboard</h1>
