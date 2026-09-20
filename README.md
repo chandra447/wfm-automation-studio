@@ -19,7 +19,7 @@ scripts/verify.sh
   Result                   all properties verified
 ```
 
-162 tests across 25 files (`bun test packages services`), including one that throws an engine away mid-approval and finishes the run on a second instance, plus 8 end-to-end scenarios against the running stack.
+185 tests across 27 files (`bun test packages services`), including one that throws an engine away mid-approval and finishes the run on a second instance, plus 8 end-to-end scenarios against the running stack.
 
 Feature-level proof, on top of the above:
 
@@ -41,13 +41,16 @@ scripts/verify-features.sh
  11. Domain outcome        PASS outcome: the domain service reflects the workflow action
  12. Steering             PASS steering: an approver message reaches the run and its artifacts
  13. Builder chat          PASS builder: a chat turn edits the graph through validated operations
-  Result                   all 20 feature properties verified
+ 14. Agent node            PASS agent: a loop node runs the payroll workflow and proposes
+  Result                   all 21 feature properties verified
 ```
 
 Step 12 approves a coverage run with a sentence the reviewer typed, then reads the artifact back and
 checks the approver's words are in it verbatim. Step 13 puts a real model behind the builder chat,
 asks for a change, and asserts the returned definition has the node it added, wired, with no
-validation errors. Both are checked against the running stack, not against a mock.
+validation errors. Step 14 swaps a workflow's single-shot decision for an agent node, publishes it,
+fires the real scenario, and reads back the tool trail and the one accounting row the loop filed.
+All three are checked against the running stack, not against a mock.
 
 Every provider check runs against the real vendor configured in `.env`. The run detail's token
 totals are compared against the `llm_calls` rows, not against a number the engine computed twice. The UI was exercised in a real browser, not just built: the canvas renders the compiled graph, deleting the approval node disables Publish with the offending node named, the approval card shows the rationale, evidence and pay impact, and approving resumes the run to `succeeded` with the shift moving to `offered`.
