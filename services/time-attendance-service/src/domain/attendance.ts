@@ -523,6 +523,8 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
           ),
         );
 
+        const raisedBreaches: Array<{ type: 'missed_break' | 'overtime'; detail: string; overtimeMinutes: number; impactCents: number }> = [];
+
         if (totals.unpaidBreakMinutesOwed > 0) {
           const missedBreakCents = roundCentsHalfUp(
             (totals.unpaidBreakMinutesOwed * employee.hourlyRateCents) / 60,
@@ -554,25 +556,17 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
               eventContext,
             ),
             makeEvent(
-              'timesheet.exception_raised',
-              {
-                timesheetId: open.id,
-                employeeId: request.employeeId,
-                shiftId,
-                exceptionType: 'missed_break',
-                awardRuleCode: rule.ruleCode,
-                detail,
-                overtimeMinutes: 0,
-                estimatedPayImpactCents: missedBreakCents,
-              },
-              eventContext,
-            ),
-            makeEvent(
               'award.rule_violation_detected',
               { timesheetId: open.id, employeeId: request.employeeId, ruleCode: rule.ruleCode, detail },
               eventContext,
             ),
           );
+          raisedBreaches.push({
+            type: 'missed_break',
+            detail,
+            overtimeMinutes: 0,
+            impactCents: missedBreakCents,
+          });
         }
 
         if (totals.overtimeMinutes > 0) {
@@ -594,6 +588,21 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
             status: 'open',
             detectedAt: at,
           });
+          raisedBreaches.push({
+            type: 'overtime',
+            detail,
+            overtimeMinutes: totals.overtimeMinutes,
+            impactCents: premiumCents,
+          });
+        }
+
+        if (exceptionRows.length > 0) await tx.db.insert(exceptionsTable).values(exceptionRows);
+
+        // One exception event per clock-out, whatever combination of breaches
+        // it contained. Two events for one timesheet would start two runs, and
+        // two runs could each apply their own stale adjustment.
+        if (raisedBreaches.length > 0) {
+          const primary = raisedBreaches[0]!;
           events.push(
             makeEvent(
               'timesheet.exception_raised',
@@ -601,18 +610,16 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
                 timesheetId: open.id,
                 employeeId: request.employeeId,
                 shiftId,
-                exceptionType: 'overtime',
+                exceptionType: primary.type,
                 awardRuleCode: rule.ruleCode,
-                detail,
-                overtimeMinutes: totals.overtimeMinutes,
-                estimatedPayImpactCents: premiumCents,
+                detail: raisedBreaches.map((breach) => breach.detail).join(' '),
+                overtimeMinutes: raisedBreaches.reduce((sum, breach) => sum + breach.overtimeMinutes, 0),
+                estimatedPayImpactCents: raisedBreaches.reduce((sum, breach) => sum + breach.impactCents, 0),
               },
               eventContext,
             ),
           );
         }
-
-        if (exceptionRows.length > 0) await tx.db.insert(exceptionsTable).values(exceptionRows);
 
         await tx.db
           .update(timesheetsTable)

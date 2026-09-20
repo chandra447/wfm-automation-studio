@@ -162,10 +162,11 @@ describe('time-attendance service', () => {
     const timesheetId = await clockIn(employee, shiftId, '2026-09-18T06:00:00Z');
 
     const { emittedEvents } = await clockOut(employee, shiftId, '2026-09-18T15:00:00Z', 0);
+    // One exception event per clock-out, carrying every breach it found: two
+    // events for one timesheet would start two runs.
     expect(emittedEvents).toEqual([
       'attendance.clock_out_recorded',
       'attendance.missed_break',
-      'timesheet.exception_raised',
       'award.rule_violation_detected',
       'timesheet.exception_raised',
     ]);
@@ -184,16 +185,15 @@ describe('time-attendance service', () => {
     });
 
     const raised = eventsOf('timesheet.exception_raised', timesheetId);
-    const missedBreakException = raised.find(
-      (event) => 'exceptionType' in event.payload && event.payload.exceptionType === 'missed_break',
-    );
-    expect(missedBreakException).toBeDefined();
-    expect(missedBreakException!.payload).toMatchObject({ estimatedPayImpactCents: 3_200 });
-    const overtimeException = raised.find(
-      (event) => 'exceptionType' in event.payload && event.payload.exceptionType === 'overtime',
-    );
-    expect(overtimeException).toBeDefined();
-    expect(overtimeException!.payload).toMatchObject({ overtimeMinutes: 60, estimatedPayImpactCents: 3_200 });
+    expect(raised).toHaveLength(1);
+    const exception = raised[0]!;
+    expect(exception.payload).toMatchObject({
+      exceptionType: 'missed_break',
+      overtimeMinutes: 60,
+      estimatedPayImpactCents: 6_400,
+    });
+    expect(exception.payload.detail).toContain('owed at the ordinary rate');
+    expect(exception.payload.detail).toContain('ordinary minutes at 1.5x');
     expect(eventsOf('award.rule_violation_detected', timesheetId)).toHaveLength(1);
 
     const detail = await call(get(`/timesheets/${timesheetId}`, actorHeaders(demo.manager)));

@@ -4,6 +4,27 @@ A working slice of an agentic workflow platform for workforce management. Two do
 
 Built as a portfolio demo for a Senior Software Engineer (Automation & AI) role. It is inspired by the public Humanforce domain model and is not affiliated with Humanforce.
 
+## Verified, not asserted
+
+```
+scripts/verify.sh
+  1. Infrastructure        PASS postgres and redis are healthy
+  2. Migrations            PASS migrations applied
+  3. Seed                  PASS demo data seeded
+  4. Services              PASS rostering-service is up
+                           PASS time-attendance-service is up
+                           PASS studio-api is up
+  5. End-to-end scenarios  PASS coverage rescue, payroll exception, idempotency, role checks
+  Result                   all properties verified
+```
+
+94 tests across 16 files (`bun test packages services`), plus 7 end-to-end scenarios against the running stack. The UI was exercised in a real browser, not just built: the canvas renders the compiled graph, deleting the approval node disables Publish with the offending node named, the approval card shows the rationale, evidence and pay impact, and approving resumes the run to `succeeded` with the shift moving to `offered`.
+
+| | |
+|---|---|
+| ![overview](docs/screenshots/01-overview.webp) | ![canvas](docs/screenshots/02-builder-canvas.webp) |
+| ![validation](docs/screenshots/03-builder-validation-blocks-publish.webp) | ![awaiting approval](docs/screenshots/05-run-awaiting-approval.webp) |
+
 ## What it demonstrates
 
 - **Customer-authored automation.** Workflows are data, not code. The canvas saves a definition, the engine compiles it into an executable graph at run time, and runs pin the version they started with.
