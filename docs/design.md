@@ -292,12 +292,13 @@ before `interrupt()` re-runs on resume, so every write in that node is an upsert
 ### 7.7 Studio API (port 4103)
 
 `GET /triggers` · `GET|POST /workflows` · `GET /workflows/:id` · `PUT /workflows/:id/draft` ·
-`POST /workflows/:id/publish` · `GET /runs` · `GET /runs/:runId` · `GET /runs/:runId/stream` (SSE) ·
-`GET /approvals` · `POST /approvals/:approvalId/decision` · `POST /simulator/:scenario`.
+`POST /workflows/:id/publish` · `GET|POST /workflows/:id/chat` · `GET /runs` · `GET /runs/:runId` ·
+`GET /runs/:runId/stream` (SSE) · `GET /approvals` · `POST /approvals/:approvalId/decision`
+(decision, reason, and optional steering feedback) · `POST /simulator/:scenario`.
 
 The simulator drives the domain services over HTTP, never the bus, so the demo exercises the real path.
 
-### 7.6 The model provider is the customer's choice
+### 7.8 The model provider is the customer's choice
 
 A tenant selects one of `platform` (the endpoint this deployment is configured with), an
 OpenAI-compatible base URL of their own, or Anthropic. A customer key is stored encrypted with
@@ -312,11 +313,56 @@ line. A workflow that names a model the file does not declare is refused at save
 Every call records the vendor's own token counts in `llm_calls`, so the run detail, the run list, and
 the dashboard show the same numbers, priced from the catalogue, auditable back to the call.
 
-### 7.7 Dashboard
+### 7.9 Dashboard
 
 `GET /dashboard` aggregates runs by status, the last 24 hours, the median duration over finished
 runs, token totals and estimated cost, and one row per workflow with its versions, run count, and
 last run. The page shows those alongside the recent runs and the scenario simulator.
+
+### 7.10 Steering: what an approver says becomes part of the run
+
+A decision carries three things, not two. The decision routes the graph, the reason is for the audit
+trail, and the feedback is for the workflow. When a reviewer writes feedback, the engine appends it
+to the run's `messages` channel as a human message, and every node after the approval sees it.
+
+- The message is appended once, by the approval node, on both the resume path and the re-executed
+  path, keyed by the approval id so a replayed resume cannot duplicate it.
+- `ai_decision` nodes pass the messages to the proposer. The model proposer renders them as an
+  instruction from a human reviewer that outranks its own default ranking wherever the policy data
+  does not forbid it. The rules proposer is deterministic and ignores them, which is stated in the
+  code rather than implied.
+- `{{run.feedback}}` resolves to the most recent message, so an artifact or an action note can quote
+  what the approver asked for.
+- The feedback is on the approval row, in the `approval_decided` event, and in the audit entry, so
+  the run detail shows what was asked and what the run then did.
+
+Steering is advice, not authority: it changes what a model prefers, never what a policy check
+permits. A reviewer who says "just approve it" still cannot get past the rest rule or the cost cap.
+
+### 7.11 Building a workflow by conversation
+
+The canvas is the system of record for the graph, and a chat turn is a proposal to change it. The
+client sends its current definition and layout with every message, so the agent reasons about what is
+on screen, including nodes the user has dragged, rather than about what it last produced.
+
+The model does not write JSON for a definition. It answers with a reply and a list of operations from
+a closed set: add, update, remove, move, connect, disconnect. One applier turns that list into a
+definition, and it is the same applier a test or a template would use.
+
+The applier is where the safety lives, and it is deliberately unforgiving:
+
+- an unknown config key is refused with the keys the kind actually declares, because a silent strip
+  looks like success to a model and teaches it nothing;
+- an illegal port is refused with the legal list, read from the kind's own declaration;
+- an operation that cannot apply is reported and skipped, so one bad guess does not discard a good
+  plan;
+- an edit that would leave the graph with more validation errors than it started with is dropped
+  whole, because the studio refuses to store an invalid draft and a half-applied edit is harder to
+  explain than a refused one.
+
+The conversation is stored per workflow, so a reload resumes the thread and what the agent was told
+sits next to the graph it produced. The graph itself is still saved by the ordinary draft autosave:
+the chat endpoint is stateless with respect to the definition, which keeps one writer for the canvas.
 
 ## 8. Reliability model
 

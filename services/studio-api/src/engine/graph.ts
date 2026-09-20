@@ -27,6 +27,10 @@ const RunState = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => null,
   }),
+  messages: Annotation<RunStateFields['messages']>({
+    reducer: (current, update) => [...current, ...update],
+    default: () => [],
+  }),
 });
 
 type RunState = typeof RunState.State;

@@ -18,6 +18,8 @@ interface EventFacts {
   commandType?: string;
   decision?: string;
   decidedBy?: string;
+  /** Steering an approver attached to their decision; the run's next human message. */
+  feedback?: string;
 }
 
 /** Engine step data crosses the network unvalidated; each field is checked at use. */
@@ -32,6 +34,9 @@ function factsOf(data: unknown): EventFacts {
   if (typeof raw.commandType === 'string') facts.commandType = raw.commandType;
   if (typeof raw.decision === 'string') facts.decision = raw.decision;
   if (typeof raw.decidedBy === 'string') facts.decidedBy = raw.decidedBy;
+  // The decision event carries the column value, so feedback is a string when
+  // the approver sent one and null otherwise; the timeout path omits it.
+  if (typeof raw.feedback === 'string' && raw.feedback !== '') facts.feedback = raw.feedback;
   if (Array.isArray(raw.evidence)) {
     const evidence: NonNullable<EventFacts['evidence']> = [];
     for (const entry of raw.evidence) {
@@ -124,6 +129,54 @@ function EventData({ facts, raw }: { facts: EventFacts; raw: unknown }) {
   );
 }
 
+/**
+ * The approver's steering is a message from the human, not an engine step, so
+ * it gets its own entry with a square marker: a reviewer reads what was asked
+ * for directly above the nodes that then acted on it.
+ */
+function SteeringEntry({ event, text, last }: { event: RunEvent; text: string; last: boolean }) {
+  return (
+    <li className="relative flex gap-3 pb-5 pl-1">
+      {last ? null : (
+        <span aria-hidden className="absolute top-5 bottom-0 left-[7px] w-px" style={{ backgroundColor: 'var(--color-border-subtle)' }} />
+      )}
+      <span
+        aria-hidden
+        className="relative z-10 mt-1 inline-block h-3.5 w-3.5 shrink-0 border-2"
+        style={{ backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-canvas)' }}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="text-sm font-medium" style={{ color: 'var(--color-primary)' }}>
+            Human steering
+          </span>
+          <span
+            className="rounded-full px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase"
+            style={{ color: 'var(--color-primary)', backgroundColor: 'var(--color-surface-raised)' }}
+          >
+            Human message
+          </span>
+          <span className="ml-auto font-mono text-[10px] text-[var(--color-ink-faint)]">{formatDateTime(event.at)}</span>
+        </div>
+        <p className="mt-1 text-xs text-[var(--color-ink-muted)]">Sent with the decision — now the run&apos;s next human message.</p>
+        <blockquote
+          className="mt-2 border-l-2 py-1.5 pl-3 text-xs leading-relaxed text-[var(--color-ink)]"
+          style={{ borderColor: 'var(--color-primary)', backgroundColor: 'var(--color-surface-raised)' }}
+        >
+          {text}
+        </blockquote>
+      </div>
+    </li>
+  );
+}
+
+interface TimelineEntry {
+  key: string;
+  event: RunEvent;
+  /** Set when this entry is the human message an approval decision carried. */
+  steering?: string;
+}
+
 export function RunEventTimeline({ events, live }: { events: RunEvent[]; live?: boolean }) {
   const sorted = [...events].sort((a, b) => a.seq - b.seq);
 
@@ -135,15 +188,29 @@ export function RunEventTimeline({ events, live }: { events: RunEvent[]; live?: 
     );
   }
 
+  // A decision that carried steering also contributes the message it put into
+  // the run, rendered as its own entry right after the decision event.
+  const entries: TimelineEntry[] = [];
+  for (const event of sorted) {
+    entries.push({ key: `${event.seq}-${event.at}`, event });
+    if (event.kind !== 'approval_decided') continue;
+    const steering = factsOf(event.data).feedback;
+    if (steering !== undefined) entries.push({ key: `${event.seq}-${event.at}-steering`, event, steering });
+  }
+
   return (
     <ol className="relative flex flex-col">
-      {sorted.map((event, index) => {
+      {entries.map((entry, index) => {
+        const last = index === entries.length - 1;
+        if (entry.steering !== undefined) {
+          return <SteeringEntry key={entry.key} event={entry.event} text={entry.steering} last={last} />;
+        }
+        const event = entry.event;
         const tone = kindTone[event.kind];
         const facts = factsOf(event.data);
-        const last = index === sorted.length - 1;
         const emphasized = emphasizedByKind[event.kind] === true;
         return (
-          <li key={`${event.seq}-${event.at}`} className="relative flex gap-3 pb-5 pl-1">
+          <li key={entry.key} className="relative flex gap-3 pb-5 pl-1">
             {last ? null : (
               <span aria-hidden className="absolute top-5 bottom-0 left-[7px] w-px" style={{ backgroundColor: 'var(--color-border-subtle)' }} />
             )}

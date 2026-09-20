@@ -166,10 +166,19 @@ export async function decideApprovalRow(
   decision: 'approved' | 'rejected' | 'timed_out',
   decidedBy: string,
   reason: string,
+  feedback?: string,
 ): Promise<ApprovalRow | undefined> {
   const rows = await db
     .update(schema.approvals)
-    .set({ status: decision, decidedBy, decisionReason: reason, decidedAt: new Date() })
+    .set({
+      status: decision,
+      decidedBy,
+      decisionReason: reason,
+      decidedAt: new Date(),
+      // A pending approval never carries feedback yet, so an omitted one is a
+      // plain null rather than a reason to keep the old value.
+      feedback: feedback ?? null,
+    })
     .where(and(eq(schema.approvals.approvalId, approvalId), eq(schema.approvals.status, 'pending')))
     .returning();
   return rows[0];
@@ -276,6 +285,7 @@ export function toApproval(row: ApprovalRow, workflowName: string): Approval {
     proposal: row.proposal as Approval['proposal'],
     decidedBy: row.decidedBy,
     decisionReason: row.decisionReason,
+    feedback: row.feedback,
   };
 }
 

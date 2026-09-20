@@ -1,6 +1,7 @@
 'use client';
 
 import type { RunEvent } from '@wfm/contracts';
+import type { BuilderChatHistory, BuilderChatRequest, BuilderChatResponse } from '@wfm/workflows';
 
 export const studioApiUrl = process.env.NEXT_PUBLIC_STUDIO_API_URL ?? 'http://127.0.0.1:4103';
 
@@ -50,6 +51,26 @@ export async function apiFetch<TResponse>(
   }
 
   return payload as TResponse;
+}
+
+/**
+ * The builder conversation is stored per workflow, so the transcript and the
+ * next turn are the same route: GET reads the thread, POST appends to it and
+ * returns the graph the turn produced.
+ */
+export async function fetchBuilderChat(
+  workflowId: string,
+  headers: Record<string, string>,
+): Promise<BuilderChatHistory> {
+  return apiFetch<BuilderChatHistory>(`/workflows/${workflowId}/chat`, { headers });
+}
+
+export async function sendBuilderMessage(
+  workflowId: string,
+  body: BuilderChatRequest,
+  headers: Record<string, string>,
+): Promise<BuilderChatResponse> {
+  return apiFetch<BuilderChatResponse>(`/workflows/${workflowId}/chat`, { method: 'POST', headers, body });
 }
 
 /** SSE over fetch so actor headers survive; EventSource cannot send headers. */

@@ -114,6 +114,8 @@ export const approvals = pgTable(
     proposal: jsonbObject('proposal').notNull(),
     decidedBy: text('decided_by'),
     decisionReason: text('decision_reason'),
+    /** Steering the approver sent to the run; becomes a human message on resume. */
+    feedback: text('feedback'),
     decidedAt: timestamp('decided_at', { withTimezone: true }),
   },
   (table) => [index('approvals_status_idx').on(table.status), index('approvals_run_idx').on(table.runId)],
@@ -205,4 +207,25 @@ export const artifacts = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index('artifacts_run_idx').on(table.runId)],
+);
+
+/**
+ * The builder conversation, one row per turn. It is stored rather than kept in
+ * the browser so a reload, or a different machine, resumes the same thread, and
+ * so what the agent was told is auditable next to the graph it produced.
+ */
+export const builderMessages = pgTable(
+  'builder_messages',
+  {
+    messageId: uuid('message_id').primaryKey(),
+    workflowId: uuid('workflow_id').notNull(),
+    tenantId: uuid('tenant_id').notNull(),
+    role: text('role', { enum: ['user', 'assistant'] }).notNull(),
+    content: text('content').notNull(),
+    model: text('model'),
+    applied: jsonbObject('applied'),
+    rejected: jsonbObject('rejected'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('builder_messages_workflow_idx').on(table.workflowId)],
 );

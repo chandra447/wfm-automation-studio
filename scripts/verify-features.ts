@@ -62,14 +62,16 @@ function skip(name: string, reason: string): void {
 
 async function call(
   path: string,
-  init: { method?: string; headers?: Record<string, string>; body?: unknown } = {},
+  init: { method?: string; headers?: Record<string, string>; body?: unknown; timeoutMs?: number } = {},
 ): Promise<{ status: number; body: unknown }> {
   try {
     const response = await fetch(`${STUDIO_API}${path}`, {
       method: init.method ?? 'GET',
       headers: init.headers ?? actor('roster_manager'),
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-      signal: AbortSignal.timeout(20_000),
+      // A model call is the slowest thing any route does, so a caller that
+      // expects one asks for a budget rather than taking the default.
+      signal: AbortSignal.timeout(init.timeoutMs ?? 20_000),
     });
     const text = await response.text();
     let parsed: unknown = text;
@@ -128,6 +130,9 @@ function eventsOf(detail: Record<string, unknown>, kind: string): Array<Record<s
 
 /* 1. the three provider modes: platform, bring your own, and none */
 const CATALOGUE_MODEL = 'deepseek/deepseek-v4.1-flash';
+
+/** The chat is interactive, so its checks use the catalogue's fast model. */
+const FAST_MODEL = 'deepseek/deepseek-chat-v3.1';
 
 async function checkPlatformProvider(): Promise<void> {
   const current = asRecord((await call('/provider-settings')).body);
@@ -478,6 +483,97 @@ async function checkDomainOutcome(): Promise<void> {
   );
 }
 
+/* 11. steering: an approver's message becomes part of the run */
+async function checkSteering(): Promise<void> {
+  await call('/provider-settings', { method: 'PUT', body: { kind: 'none' } });
+  const runId = await fireScenario('coverage_rescue');
+  if (runId === null) {
+    record('steering: an approver message reaches the run and its artifacts', false, 'the coverage scenario did not produce a run');
+    return;
+  }
+  const paused = (await waitForStatus(runId, ['awaiting_approval'])) ?? {};
+  const approvalId = String(asRecord(paused['approval'])['approvalId'] ?? '');
+  if (approvalId === '') {
+    record('steering: an approver message reaches the run and its artifacts', false, 'the run never reached an approval');
+    return;
+  }
+
+  const steering = 'Offer it to Marcus and cap the overtime premium at two hours.';
+  const decided = await call(`/approvals/${approvalId}/decision`, {
+    method: 'POST',
+    body: { decision: 'approve', reason: 'Approved with a condition', feedback: steering },
+  });
+  if (decided.status >= 400) {
+    record(
+      'steering: an approver message reaches the run and its artifacts',
+      false,
+      `the decision returned ${decided.status} ${JSON.stringify(decided.body).slice(0, 200)}`,
+    );
+    return;
+  }
+
+  const final = (await waitForStatus(runId, ['succeeded', 'failed', 'cancelled'])) ?? {};
+  const status = String(asRecord(final['run'])['status']);
+  const stored = String(asRecord(final['approval'])['feedback'] ?? '');
+  const eventFeedback = String(asRecord(eventsOf(final, 'approval_decided')[0]?.['data'])['feedback'] ?? '');
+  const artifactId = String(asArray(asRecord(final['output'])['artifacts']).map(asRecord)[0]?.['artifactId'] ?? '');
+  const content = artifactId === '' ? '' : String(asRecord((await call(`/artifacts/${artifactId}`)).body)['content'] ?? '');
+
+  record(
+    'steering: an approver message reaches the run and its artifacts',
+    status === 'succeeded' && stored === steering && eventFeedback === steering && content.includes(steering),
+    `status=${status} stored=${stored === steering} event=${eventFeedback === steering} artifactQuotesSteering=${content.includes(steering)}`,
+  );
+}
+
+/* 12. the conversational builder edits the graph through a validated operation list */
+async function checkBuilderChat(): Promise<void> {
+  await call('/provider-settings', { method: 'PUT', body: { kind: 'platform', model: FAST_MODEL } });
+  const created = await call('/workflows', {
+    method: 'POST',
+    body: { name: `Builder chat check ${Date.now()}`, fromWorkflowId: COVERAGE_WORKFLOW },
+  });
+  const workflowId = String(asRecord(created.body)['workflowId'] ?? '');
+  if (created.status >= 400 || workflowId === '') {
+    record('builder: a chat turn edits the graph through validated operations', false, `POST /workflows returned ${created.status} ${JSON.stringify(created.body).slice(0, 200)}`);
+    return;
+  }
+
+  try {
+    const detail = asRecord((await call(`/workflows/${workflowId}`)).body);
+    const version = asArray(detail['versions']).map(asRecord).find((candidate) => candidate['status'] === 'draft') ?? asArray(detail['versions']).map(asRecord)[0];
+    const definition = version?.['definition'];
+    const before = asArray(asRecord(definition)['nodes']).length;
+
+    const chat = await call(`/workflows/${workflowId}/chat`, {
+      method: 'POST',
+      timeoutMs: 180_000,
+      body: {
+        message:
+          'Add an artifact node with id manager_handover, labelled "Manager handover", whose body says the shift was covered and quotes the approver steering. Wire it from cover_note on its always port and into filled_end, replacing the direct cover_note to filled_end edge.',
+        definition,
+        layout: version?.['layout'],
+        eventType: 'shift.cancelled',
+        model: FAST_MODEL,
+      },
+    });
+    const reply = asRecord(chat.body);
+    const after = asArray(asRecord(reply['definition'])['nodes']).length;
+    const applied = asArray(reply['applied']);
+    const rejected = asArray(reply['rejected']);
+    const errors = asArray(reply['diagnostics']).map(asRecord).filter((diagnostic) => diagnostic['severity'] === 'error');
+    const history = asArray(asRecord((await call(`/workflows/${workflowId}/chat`)).body)['messages']);
+
+    record(
+      'builder: a chat turn edits the graph through validated operations',
+      chat.status === 200 && applied.length > 0 && after === before + 1 && errors.length === 0 && history.length >= 2,
+      `status=${chat.status} nodes ${before}->${after} applied=${applied.length} rejected=${rejected.length} errors=${errors.length} history=${history.length} reply="${String(reply['reply']).replace(/\s+/g, ' ').slice(0, 120)}"`,
+    );
+  } finally {
+    await call(`/workflows/${workflowId}`, { method: 'DELETE' });
+  }
+}
+
 /* leave the demo configured the way a reviewer will find it */
 async function restorePlatformProvider(): Promise<void> {
   const restored = await call('/provider-settings', { method: 'PUT', body: { kind: 'platform', model: CATALOGUE_MODEL } });
@@ -500,7 +596,9 @@ const steps: Array<[string, () => Promise<void>]> = [
   ['9. References and artifacts', checkReferencesAndArtifact],
   ['10. Node-kind extension', checkExtension],
   ['11. Domain outcome', checkDomainOutcome],
-  ['12. Leave the demo on the platform provider', restorePlatformProvider],
+  ['12. Steering from an approval', checkSteering],
+  ['13. Conversational builder', checkBuilderChat],
+  ['14. Leave the demo on the platform provider', restorePlatformProvider],
 ];
 
 for (const [title, run] of steps) {

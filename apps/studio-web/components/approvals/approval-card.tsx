@@ -1,9 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { Approval, DecisionResponse } from '@wfm/contracts';
+import type { Approval, DecisionRequest, DecisionResponse } from '@wfm/contracts';
 import { apiFetch, ApiFailure } from '@/lib/api';
 import { useDemoActor } from '@/components/demo-actor-provider';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { formatCents, formatCountdown } from '../runs/format';
 import { PayImpactBadge } from '../runs/pay-impact';
@@ -17,6 +20,7 @@ interface ApprovalCardProps {
 export function ApprovalCard({ approval, onDecided, className }: ApprovalCardProps) {
   const { headers, actor } = useDemoActor();
   const [reason, setReason] = useState('');
+  const [feedback, setFeedback] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<ApiFailure | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -33,10 +37,14 @@ export function ApprovalCard({ approval, onDecided, className }: ApprovalCardPro
     setSubmitting(true);
     setFailure(null);
     try {
+      const steering = feedback.trim();
+      // The API rejects an empty feedback string but accepts the field absent,
+      // so an untouched textarea must leave it out of the body entirely.
+      const body: DecisionRequest = { decision, reason, ...(steering === '' ? {} : { feedback: steering }) };
       const response = await apiFetch<DecisionResponse>(`/approvals/${approval.approvalId}/decision`, {
         method: 'POST',
         headers,
-        body: { decision, reason },
+        body,
       });
       onDecided(response);
     } catch (error) {
@@ -119,18 +127,32 @@ export function ApprovalCard({ approval, onDecided, className }: ApprovalCardPro
       </div>
 
       <div className="flex flex-col gap-2">
-        <label className="text-xs text-[var(--color-ink-faint)]" htmlFor={`reason-${approval.approvalId}`}>
+        <Label className="text-[var(--color-ink-faint)]" htmlFor={`reason-${approval.approvalId}`}>
           Reason <span className="text-[var(--color-danger)]">(required)</span>
-        </label>
-        <textarea
+        </Label>
+        <Textarea
           id={`reason-${approval.approvalId}`}
           value={reason}
           onChange={(event) => setReason(event.target.value)}
           placeholder="Why this decision is being made — recorded verbatim in the audit trail"
           rows={2}
-          className="w-full rounded-md border bg-[var(--color-surface-raised)] px-3 py-2 text-sm text-[var(--color-ink)] outline-none focus:border-[var(--color-primary)]"
-          style={{ borderColor: 'var(--color-border-subtle)' }}
         />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <Label className="text-[var(--color-ink-faint)]" htmlFor={`feedback-${approval.approvalId}`}>
+          Tell the workflow what to do next
+        </Label>
+        <Textarea
+          id={`feedback-${approval.approvalId}`}
+          value={feedback}
+          onChange={(event) => setFeedback(event.target.value)}
+          placeholder="e.g. Cover the shift with the cheapest qualified nurse and hold the offer until 06:00"
+          rows={2}
+        />
+        <p className="text-[11px] text-[var(--color-ink-faint)]">
+          Optional. It becomes the next human message in the run, so the nodes after this approval decide with it in view.
+        </p>
       </div>
 
       {failure ? (
@@ -159,24 +181,24 @@ export function ApprovalCard({ approval, onDecided, className }: ApprovalCardPro
       ) : null}
 
       <footer className="flex items-center gap-2">
-        <button
+        <Button
           type="button"
           disabled={submitting || needsReason}
           onClick={() => void decide('approve')}
-          className="rounded-md px-3 py-1.5 text-sm font-medium text-white transition-opacity disabled:opacity-40"
+          className="text-white hover:opacity-90"
           style={{ backgroundColor: 'var(--color-success)' }}
         >
           Approve
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
           disabled={submitting || needsReason}
           onClick={() => void decide('reject')}
-          className="rounded-md px-3 py-1.5 text-sm font-medium text-white transition-opacity disabled:opacity-40"
+          className="text-white hover:opacity-90"
           style={{ backgroundColor: 'var(--color-danger)' }}
         >
           Reject
-        </button>
+        </Button>
         {needsReason ? <span className="text-[11px] text-[var(--color-ink-faint)]">Enter a reason to enable the decision</span> : null}
         <span className="ml-auto text-[11px] text-[var(--color-ink-faint)]">escalates to {approval.escalateTo} on timeout</span>
       </footer>

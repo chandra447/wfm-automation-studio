@@ -220,6 +220,7 @@ export class Orchestrator {
           definition: version.definition,
           event: eventEnvelope,
           nodes: {},
+          messages: [],
           cursor: '',
           decision: null,
         };

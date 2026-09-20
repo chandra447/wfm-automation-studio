@@ -201,9 +201,11 @@ export class LlmSettings {
   /**
    * The provider this tenant's runs should call, or null when it has none: a
    * tenant with no row, `none`, or a platform that is not configured from env
-   * all fall back to the deterministic rules path.
+   * all fall back to the deterministic rules path. `model` overrides the
+   * tenant's configured model for one call, which is how the builder chat can
+   * use a faster model than the workflows it writes.
    */
-  async resolveProvider(tenantId: string): Promise<LlmProvider | null> {
+  async resolveProvider(tenantId: string, model?: string): Promise<LlmProvider | null> {
     const row = await this.#row(tenantId);
     if (row === undefined || row.kind === 'none') return null;
 
@@ -211,29 +213,30 @@ export class LlmSettings {
     if (row.kind === 'platform') {
       const platform = this.#platform();
       if (platform.baseUrl === null || platform.apiKey === null) return null;
-      const model = row.model ?? platform.model ?? this.#catalogue.defaultModel().id;
+      const chosen = model ?? row.model ?? platform.model ?? this.#catalogue.defaultModel().id;
       return new OpenAiCompatibleProvider({
         kind: 'platform',
         baseUrl: platform.baseUrl,
         apiKey: platform.apiKey,
-        model,
-        jsonMode: this.#jsonMode(model),
+        model: chosen,
+        jsonMode: this.#jsonMode(chosen),
         timeoutMs,
       });
     }
 
-    const { baseUrl, model, apiKeyCiphertext } = row;
-    if (baseUrl === null || model === null || apiKeyCiphertext === null) return null;
+    const { baseUrl, apiKeyCiphertext } = row;
+    const chosen = model ?? row.model;
+    if (baseUrl === null || chosen === null || apiKeyCiphertext === null) return null;
     const secret = envValue(this.#env, 'LLM_CONFIG_SECRET');
     if (secret === null) throw new Error('LLM_CONFIG_SECRET is required to read a stored provider key');
     const apiKey = decryptApiKey(secret, apiKeyCiphertext);
 
     if (row.kind === 'anthropic') {
-      const maxTokens = this.#catalogue.modelById(model)?.maxOutputTokens;
+      const maxTokens = this.#catalogue.modelById(chosen)?.maxOutputTokens;
       return new AnthropicProvider({
         baseUrl,
         apiKey,
-        model,
+        model: chosen,
         ...(maxTokens === undefined ? {} : { maxTokens }),
         timeoutMs,
       });
@@ -242,8 +245,8 @@ export class LlmSettings {
       kind: row.kind,
       baseUrl,
       apiKey,
-      model,
-      jsonMode: this.#jsonMode(model),
+      model: chosen,
+      jsonMode: this.#jsonMode(chosen),
       timeoutMs,
     });
   }

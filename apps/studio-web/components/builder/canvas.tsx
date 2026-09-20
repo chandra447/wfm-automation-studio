@@ -29,7 +29,9 @@ import Link from 'next/link';
 import { apiFetch, ApiFailure } from '@/lib/api';
 import { useDemoActor } from '@/components/demo-actor-provider';
 import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { BuilderNode } from './builder-node';
+import { ChatPanel } from './chat-panel';
 import { type ControlOption, type OptionSources } from './control-options';
 import { DataPalette } from './data-palette';
 import { DiagnosticsPanel } from './diagnostics-panel';
@@ -326,12 +328,15 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
           .map((version) => version.versionNumber);
         setPublishedVersion(published.length > 0 ? Math.max(...published) : null);
         const baseSnapshot = { definition: base.definition, layout: base.layout };
-        storeRef.current.reset(baseSnapshot, { clean: true });
-        setSavedSerialized(serializeSnapshot(baseSnapshot));
+        // Read the mirror before adopting the server baseline: a clean reset
+        // clears it, so reading afterwards would silently drop a draft that a
+        // previous session never managed to save.
         const local = readLocalDraft(workflowId);
         if (local && local.savedAt > Date.parse(detail.workflow.updatedAt) + 2_000) {
           setRestoreOffer({ savedAt: local.savedAt, snapshot: local.snapshot });
         }
+        storeRef.current.reset(baseSnapshot, { clean: true });
+        setSavedSerialized(serializeSnapshot(baseSnapshot));
         setLoaded(true);
       } catch (error) {
         if (!alive) return;
@@ -565,18 +570,57 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
       )}
       <div className="flex min-h-0 flex-1">
         <TemplateFieldProvider>
-          <Palette
-            disabled={!loaded}
-            onAdd={(nodeType) => {
-              const id = nextNodeId(snapshot.definition.nodes.map((node) => node.id), nodeType);
-              const viewport = snapshot.layout.viewport;
-              store.addNode(
-                { ...defaultNode(nodeType), id },
-                { x: (-viewport.x + 360) / viewport.zoom, y: (-viewport.y + 240) / viewport.zoom },
-              );
-              setSelectedId(id);
-            }}
-          />
+          {/* Chat and the drag-and-drop palette share the left column: the agent
+              needs the width, and the palette must stay reachable beside it. */}
+          <Tabs
+            defaultValue="chat"
+            className="flex w-72 shrink-0 flex-col overflow-hidden border-r border-[var(--color-border-subtle)] bg-[var(--color-surface)]"
+          >
+            <TabsList className="mx-2 mt-2 w-fit">
+              <TabsTrigger value="chat" className="px-3">
+                Chat
+              </TabsTrigger>
+              <TabsTrigger value="nodes" className="px-3">
+                Nodes
+              </TabsTrigger>
+            </TabsList>
+            {/* forceMount keeps the transcript, the draft, and the model choice
+                alive while the Nodes tab is open. */}
+            <TabsContent
+              value="chat"
+              forceMount
+              className="flex min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden"
+            >
+              <ChatPanel
+                workflowId={workflowId}
+                headers={headers}
+                snapshot={snapshot}
+                eventType={triggerEventType}
+                disabled={!loaded || offline}
+                onApplied={(next, nextDiagnostics) => {
+                  // Not `clean`: the agent's graph is newer than the server's
+                  // until the autosave lands, so it belongs in the mirror.
+                  store.reset(next);
+                  setServerDiagnostics(null);
+                  if (nextDiagnostics.length > 0) setDiagnosticsOpen(true);
+                }}
+              />
+            </TabsContent>
+            <TabsContent value="nodes" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <Palette
+                disabled={!loaded}
+                onAdd={(nodeType) => {
+                  const id = nextNodeId(snapshot.definition.nodes.map((node) => node.id), nodeType);
+                  const viewport = snapshot.layout.viewport;
+                  store.addNode(
+                    { ...defaultNode(nodeType), id },
+                    { x: (-viewport.x + 360) / viewport.zoom, y: (-viewport.y + 240) / viewport.zoom },
+                  );
+                  setSelectedId(id);
+                }}
+              />
+            </TabsContent>
+          </Tabs>
           <ReactFlowProvider>
             <FlowCanvas
               flowNodes={flowNodes}

@@ -19,7 +19,7 @@ const paletteIcons: Record<WorkflowNodeType, string> = {
 
 export function Palette({ onAdd, disabled }: { onAdd: (nodeType: WorkflowNodeType) => void; disabled?: boolean }) {
   return (
-    <aside className="flex w-56 shrink-0 flex-col gap-1 overflow-y-auto border-r border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-3">
+    <aside className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-3">
       <p className="px-1 pb-1 text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">
         Palette
       </p>

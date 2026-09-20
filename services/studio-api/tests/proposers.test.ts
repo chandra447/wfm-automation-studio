@@ -106,6 +106,7 @@ describe('rules proposer', () => {
       node: candidateNode,
       event: cancelledEvent,
       data: await candidatesData(),
+      steering: [],
     });
     expect(result.proposer).toBe('rules');
     const output = candidateChoiceOutputSchema.parse(result.output);
@@ -123,6 +124,7 @@ describe('rules proposer', () => {
       node: adjustmentNode,
       event: exceptionEvent,
       data: { 'timesheet.get': timesheetFixture },
+      steering: [],
     });
     expect(result.proposer).toBe('rules');
     const output = timesheetAdjustmentOutputSchema.parse(result.output);
@@ -145,7 +147,7 @@ describe('rules proposer', () => {
       'shift.candidates': ineligibleOnly,
     };
     await proposer
-      .propose({ runId: RUN_ID, node: candidateNode, event: cancelledEvent, data })
+      .propose({ runId: RUN_ID, node: candidateNode, event: cancelledEvent, data, steering: [] })
       .then(
         () => {
           throw new Error('proposer should have refused');

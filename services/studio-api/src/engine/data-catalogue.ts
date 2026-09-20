@@ -108,6 +108,7 @@ export function buildDataCatalogue(eventType: string): DataCatalogue {
           { path: 'run.tenantId', label: 'tenantId', type: 'string', sample: '' },
           { path: 'run.correlationId', label: 'correlationId', type: 'string', sample: '' },
           { path: 'run.triggerEventId', label: 'triggerEventId', type: 'string', sample: '' },
+          { path: 'run.feedback', label: 'feedback', type: 'string', sample: '' },
         ],
       },
       {

@@ -159,6 +159,19 @@ const TABLE_DDL: readonly string[] = [
     created_at timestamptz NOT NULL DEFAULT now()
   )`,
   `CREATE INDEX IF NOT EXISTS artifacts_run_idx ON artifacts (run_id)`,
+  `ALTER TABLE approvals ADD COLUMN IF NOT EXISTS feedback text`,
+  `CREATE TABLE IF NOT EXISTS builder_messages (
+    message_id uuid PRIMARY KEY,
+    workflow_id uuid NOT NULL,
+    tenant_id uuid NOT NULL,
+    role text NOT NULL CHECK (role IN ('user', 'assistant')),
+    content text NOT NULL,
+    model text,
+    applied jsonb,
+    rejected jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS builder_messages_workflow_idx ON builder_messages (workflow_id)`,
 ];
 
 export async function ensureStudioTables(sql: SQL): Promise<void> {

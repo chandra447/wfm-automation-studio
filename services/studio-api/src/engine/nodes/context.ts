@@ -41,6 +41,9 @@ export function templateScopeOf(scope: RunScope, state: RunStateFields): Templat
       workflowName: scope.workflowName,
       correlationId: scope.correlationId,
       triggerEventId: scope.triggerEventId,
+      // The most recent human turn, so a downstream node can render the
+      // reviewer's instruction; empty until an approver sends one.
+      feedback: state.messages.at(-1)?.content ?? '',
     },
     now: new Date(),
   };

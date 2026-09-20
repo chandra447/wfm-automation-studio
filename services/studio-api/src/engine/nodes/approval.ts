@@ -10,12 +10,29 @@ import { coveragePlanOutputSchema } from './proposers.ts';
 import { appendAudit, appendRunEvent, getFirstRunEvent, insertApproval, listApprovalsForNode } from '../run-store.ts';
 import { publishApprovalRequested } from '../events.ts';
 import type { ApprovalRow, RunDb } from '../run-store.ts';
-import type { ResumePayload, RunScope, RunStateFields } from '../state.ts';
+import type { ResumePayload, RunMessage, RunScope, RunStateFields } from '../state.ts';
 import type { ExecutorDeps } from './context.ts';
 
 interface ApprovalPause {
   decision: 'pending';
   approvalId: string;
+}
+
+type ApprovalOutcome = Pick<RunStateFields, 'nodes' | 'cursor' | 'decision' | 'messages'>;
+
+/**
+ * The steering a decision carries, as a run message. A blank note steers
+ * nothing, so it appends no message; anything else becomes the next human turn
+ * every later AI node reasons over.
+ */
+function steeringMessages(
+  feedback: string | null | undefined,
+  nodeId: string,
+  approvalId: string,
+  actor: string | null,
+): RunMessage[] {
+  if (feedback === null || feedback === undefined || feedback.trim() === '') return [];
+  return [{ role: 'human', content: feedback, at: new Date().toISOString(), nodeId, approvalId, actor }];
 }
 
 interface Proposal {
@@ -89,7 +106,7 @@ export async function runApprovalNode(
   deps: ExecutorDeps,
   node: WorkflowNode,
   state: RunStateFields,
-): Promise<Pick<RunStateFields, 'nodes' | 'cursor' | 'decision'>> {
+): Promise<ApprovalOutcome> {
   if (node.type !== 'human_approval') throw new Error(`${node.type} executor reached with a ${node.type} node`);
   const rows = await listApprovalsForNode(deps.db, scope.runId, node.id);
 
@@ -105,12 +122,14 @@ export async function runApprovalNode(
             approvalId: decided.approvalId,
             decidedBy: decided.decidedBy,
             reason: decided.decisionReason,
+            feedback: decided.feedback,
           },
           summary,
         },
       },
       cursor: node.id,
       decision: { nodeId: node.id, port },
+      messages: steeringMessages(decided.feedback, node.id, decided.approvalId, decided.decidedBy),
     };
   }
 
@@ -139,10 +158,7 @@ export async function runApprovalNode(
   return decisionResult(node.id, second);
 }
 
-function decisionResult(
-  nodeId: string,
-  resume: ResumePayload,
-): Pick<RunStateFields, 'nodes' | 'cursor' | 'decision'> {
+function decisionResult(nodeId: string, resume: ResumePayload): ApprovalOutcome {
   if (resume.decision === 'timeout') {
     throw new Error(
       `approval ${resume.approvalId} timed out again at node ${nodeId} and no further escalation is configured`,
@@ -152,12 +168,13 @@ function decisionResult(
   return {
     nodes: {
       [nodeId]: {
-        output: { decision: resume.decision, approvalId: resume.approvalId },
+        output: { decision: resume.decision, approvalId: resume.approvalId, feedback: resume.feedback ?? null },
         summary: `approval ${resume.approvalId} ${resume.decision === 'approve' ? 'approved' : 'rejected'}`,
       },
     },
     cursor: nodeId,
     decision: { nodeId, port },
+    messages: steeringMessages(resume.feedback, nodeId, resume.approvalId, null),
   };
 }
 
@@ -165,7 +182,7 @@ async function escalationExhausted(
   scope: RunScope,
   deps: ExecutorDeps,
   node: HumanApprovalNode,
-): Promise<Pick<RunStateFields, 'nodes' | 'cursor' | 'decision'>> {
+): Promise<ApprovalOutcome> {
   const detail =
     `Approval timed out for ${node.config.role} and again for ${node.config.escalateTo}. ` +
     'The run failed without executing any pay-affecting action.';
@@ -191,6 +208,7 @@ async function escalationExhausted(
     },
     cursor: node.id,
     decision: { nodeId: node.id, port: 'rejected' },
+    messages: [],
   };
 }
 

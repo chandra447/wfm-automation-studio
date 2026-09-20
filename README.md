@@ -19,7 +19,7 @@ scripts/verify.sh
   Result                   all properties verified
 ```
 
-128 tests across 21 files (`bun test packages services`), including one that throws an engine away mid-approval and finishes the run on a second instance, plus 8 end-to-end scenarios against the running stack.
+149 tests across 24 files (`bun test packages services`), including one that throws an engine away mid-approval and finishes the run on a second instance, plus 8 end-to-end scenarios against the running stack.
 
 Feature-level proof, on top of the above:
 
@@ -39,8 +39,15 @@ scripts/verify-features.sh
   9. References, artifacts PASS references: a run resolves {{input.payload.*}} and context paths
  10. Node-kind extension   PASS extension: a new node kind is one file plus registration lines
  11. Domain outcome        PASS outcome: the domain service reflects the workflow action
-  Result                   all 18 feature properties verified
+ 12. Steering             PASS steering: an approver message reaches the run and its artifacts
+ 13. Builder chat          PASS builder: a chat turn edits the graph through validated operations
+  Result                   all 20 feature properties verified
 ```
+
+Step 12 approves a coverage run with a sentence the reviewer typed, then reads the artifact back and
+checks the approver's words are in it verbatim. Step 13 puts a real model behind the builder chat,
+asks for a change, and asserts the returned definition has the node it added, wired, with no
+validation errors. Both are checked against the running stack, not against a mock.
 
 Every provider check runs against the real vendor configured in `.env`. The run detail's token
 totals are compared against the `llm_calls` rows, not against a number the engine computed twice. The UI was exercised in a real browser, not just built: the canvas renders the compiled graph, deleting the approval node disables Publish with the offending node named, the approval card shows the rationale, evidence and pay impact, and approving resumes the run to `succeeded` with the shift moving to `offered`.
@@ -49,6 +56,7 @@ totals are compared against the `llm_calls` rows, not against a number the engin
 |---|---|
 | ![overview](docs/screenshots/01-overview.webp) | ![canvas](docs/screenshots/02-builder-canvas.webp) |
 | ![validation](docs/screenshots/03-builder-validation-blocks-publish.webp) | ![awaiting approval](docs/screenshots/05-run-awaiting-approval.webp) |
+| ![builder chat](docs/screenshots/11-builder-chat.png) | ![steering](docs/screenshots/12-run-steering.png) |
 
 ## What it demonstrates
 
@@ -61,6 +69,8 @@ totals are compared against the `llm_calls` rows, not against a number the engin
 - **Data in the builder.** The canvas lists the trigger event's fields with sample values and inserts `{{...}}` references into prompts, action inputs, and artifact bodies. References are validated at save time against the event's published schema.
 - **Artifacts.** A run can render a document from its own data and attach it, which is what the run detail shows as its delivered output.
 - **Extension by declaration.** A node kind is one file plus registration lines: its config schema, ports, capabilities, canvas fields, summary, and template slots in one place. The validator's platform invariants are written against capabilities, so a new kind inherits pay-safety rules without new validator code.
+- **Steering, not just approving.** A decision carries three things: the decision routes the graph, the reason goes to the audit trail, and the feedback becomes the next human message in the run. Downstream AI nodes decide with the approver's instruction in front of them, and `{{run.feedback}}` lets an artifact quote it. Steering is advice, never authority: it changes what a model prefers, not what a policy check permits.
+- **A workflow you can describe.** The builder has a chat panel beside the canvas. The model does not write a definition; it proposes a short list of operations from a closed set, and one applier validates them against the same kind declarations the canvas uses. The client sends its current graph every turn, so the agent reasons about what is on screen, including nodes you dragged, and the applier refuses an edit that would leave the graph invalid.
 
 ## Architecture
 

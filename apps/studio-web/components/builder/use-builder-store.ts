@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { CanvasLayout, WorkflowEdge, WorkflowNode } from '@wfm/workflows';
-import { edgeKey, writeLocalDraft, type BuilderSnapshot } from './state';
+import { clearLocalDraft, edgeKey, writeLocalDraft, type BuilderSnapshot } from './state';
 
 /**
  * The canvas state is the snapshot — definition plus layout — and every edit
@@ -178,7 +178,10 @@ export function useBuilderStore(workflowId: string, initial: BuilderSnapshot): B
       setSnapshot(cloned);
       setHistoryTick((tick) => tick + 1);
       if (opts?.clean) {
-        writeLocalDraft(workflowId, cloned);
+        // A clean snapshot is the server's own state, so there is nothing to
+        // recover: leaving a mirror here is what made every load offer to
+        // restore a draft that was never unsaved in the first place.
+        clearLocalDraft(workflowId);
       }
     },
     [workflowId],

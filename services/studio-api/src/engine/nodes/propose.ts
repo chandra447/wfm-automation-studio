@@ -90,7 +90,13 @@ export async function runProposeNode(
     }
   }
 
-  const proposal = await deps.proposer.propose({ runId: scope.runId, node, event: state.event, data });
+  const proposal = await deps.proposer.propose({
+    runId: scope.runId,
+    node,
+    event: state.event,
+    data,
+    steering: state.messages,
+  });
   const actor =
     proposal.proposer === 'llm' ? `llm:${proposal.model ?? 'unknown'}@${proposal.promptVersion ?? 'v1'}` : 'rules';
 

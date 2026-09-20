@@ -80,6 +80,7 @@ function candidateState(employeeIds: string[], costDeltaCents: number): RunState
     definition: coverageRescueWorkflow,
     event: shiftEvent(),
     nodes: { rank_candidates: { output, summary: 'test proposal' } },
+    messages: [],
     cursor: 'rank_candidates',
     decision: null,
   };
@@ -104,6 +105,7 @@ function adjustmentState(unpaidBreakMinutesDelta: number, overtimeMinutesDelta: 
         summary: 'test adjustment',
       },
     },
+    messages: [],
     cursor: 'draft_adjustment',
     decision: null,
   };

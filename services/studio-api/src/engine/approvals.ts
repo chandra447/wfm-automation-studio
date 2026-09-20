@@ -52,7 +52,7 @@ export class ApprovalService {
     }
 
     const decision: 'approved' | 'rejected' = request.decision === 'approve' ? 'approved' : 'rejected';
-    const decided = await decideApprovalRow(this.#db, approvalId, decision, actor.userId, request.reason);
+    const decided = await decideApprovalRow(this.#db, approvalId, decision, actor.userId, request.reason, request.feedback);
     if (!decided) {
       // Already decided: replay the stored decision without resuming the graph.
       this.#logger.info({ tenantId: row.tenantId, approvalId }, 'approval already decided; replaying stored decision');
@@ -71,7 +71,7 @@ export class ApprovalService {
       nodeId: row.nodeId,
       title: `Approval ${decision} by ${actor.userId}`,
       detail: request.reason,
-      data: { approvalId, decision: decided.status, decidedBy: actor.userId },
+      data: { approvalId, decision: decided.status, decidedBy: actor.userId, feedback: decided.feedback },
     });
     await appendAudit(this.#db, {
       tenantId: row.tenantId,
@@ -80,7 +80,7 @@ export class ApprovalService {
       nodeId: row.nodeId,
       action: 'human_approval.decided',
       actor: actor.userId,
-      detail: { approvalId, decision, reason: request.reason, roles: actor.roles },
+      detail: { approvalId, decision, reason: request.reason, feedback: decided.feedback, roles: actor.roles },
     });
     const run = await getRunRow(this.#db, row.runId);
     await publishApprovalDecided(this.#bus, {
@@ -97,6 +97,7 @@ export class ApprovalService {
     const runStatus = await this.#orchestrator.resumeAfterDecision(row.runId, {
       decision: request.decision,
       approvalId,
+      ...(request.feedback === undefined ? {} : { feedback: request.feedback }),
     });
     this.#logger.info({ tenantId: row.tenantId, runId: row.runId, approvalId, decision }, 'approval decided');
     return { approvalId, runId: row.runId, status: decided.status, runStatus };

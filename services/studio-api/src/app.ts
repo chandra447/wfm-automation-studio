@@ -7,13 +7,20 @@ import {
   parseActorContext,
   type ActorContext,
 } from '@wfm/contracts';
-import { emptyLayout, workflowDefinitionSchema, WorkflowValidationError, type CanvasLayout } from '@wfm/workflows';
+import {
+  builderChatRequestSchema,
+  emptyLayout,
+  workflowDefinitionSchema,
+  WorkflowValidationError,
+  type CanvasLayout,
+} from '@wfm/workflows';
 import { Elysia, t } from 'elysia';
 import { ZodError } from 'zod';
 import type { EngineService, SaveWorkflowRequest } from './engine/contract.ts';
 import { engineOf } from './engine/runtime.ts';
 import { createEngineFromEnv } from './engine/index.ts';
 import { createLlmServices, llmRouteHandlers, type LlmRouteHandlers } from './llm/index.ts';
+import { builderRouteHandlers, type BuilderRouteHandlers } from './builder/index.ts';
 import { connectStudioDb } from './engine/db.ts';
 import { dashboardHandler } from './dashboard/index.ts';
 
@@ -95,6 +102,16 @@ function llmHandlers(): Promise<LlmRouteHandlers> {
   return llmHandlersPromise;
 }
 
+/** The builder chat, built once per process over its own pool from the same database. */
+let builderHandlersPromise: Promise<BuilderRouteHandlers> | null = null;
+function builderHandlers(): Promise<BuilderRouteHandlers> {
+  builderHandlersPromise ??= (async () => {
+    const studio = connectStudioDb(process.env.STUDIO_DATABASE_URL ?? '');
+    return builderRouteHandlers({ db: studio.db, llm: await createLlmServices(studio.db, process.env) });
+  })();
+  return builderHandlersPromise;
+}
+
 export const app = new Elysia()
   .use(cors())
   .onError(({ error, set }) => {
@@ -159,6 +176,18 @@ export const app = new Elysia()
     await (await engineOf(createEngineFromEnv)).deleteWorkflow(actorOf(headers), params.workflowId);
     return { deleted: true };
   })
+  .post('/workflows/:workflowId/chat', async ({ headers, params, body }) => {
+    const actor = actorOf(headers);
+    // The engine owns tenancy, so a workflow from another tenant is a 404
+    // before the model is ever asked anything.
+    await (await engineOf(createEngineFromEnv)).getWorkflow(actor, params.workflowId);
+    return (await builderHandlers()).chat(actor, params.workflowId, builderChatRequestSchema.parse(body));
+  })
+  .get('/workflows/:workflowId/chat', async ({ headers, params }) => {
+    const actor = actorOf(headers);
+    await (await engineOf(createEngineFromEnv)).getWorkflow(actor, params.workflowId);
+    return (await builderHandlers()).history(actor, params.workflowId);
+  })
   .get('/runs', async ({ headers, query }) =>
     (await engineOf(createEngineFromEnv)).listRuns(actorOf(headers), {
       ...(query.workflowId ? { workflowId: String(query.workflowId) } : {}),
@@ -187,7 +216,13 @@ export const app = new Elysia()
     '/approvals/:approvalId/decision',
     async ({ headers, params, body }) =>
       (await engineOf(createEngineFromEnv)).decideApproval(actorOf(headers), params.approvalId, body),
-    { body: t.Object({ decision: t.Union([t.Literal('approve'), t.Literal('reject')]), reason: t.String({ minLength: 1, maxLength: 500 }) }) },
+    {
+      body: t.Object({
+        decision: t.Union([t.Literal('approve'), t.Literal('reject')]),
+        reason: t.String({ minLength: 1, maxLength: 500 }),
+        feedback: t.Optional(t.String({ minLength: 1, maxLength: 1000 })),
+      }),
+    },
   )
   .post('/simulator/:scenario', async ({ headers, params }) =>
     (await engineOf(createEngineFromEnv)).simulate(actorOf(headers), params.scenario as never),

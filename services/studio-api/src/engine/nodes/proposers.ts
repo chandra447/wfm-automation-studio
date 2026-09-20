@@ -17,6 +17,7 @@ import { EnginePermanentError } from '../errors.ts';
 import { LlmAccounting } from '../../llm/accounting.ts';
 import { LlmSettings } from '../../llm/settings.ts';
 import type { LlmCompletion, LlmProvider } from '../../llm/provider.ts';
+import type { RunMessage } from '../state.ts';
 
 /**
  * The proposer port (ADR-0006): the model proposes, policy constrains, and a
@@ -45,6 +46,8 @@ export interface ProposerInput {
   event: AnyWfmEvent;
   /** Tool outputs keyed by tool id; only the node's declared tools are present. */
   data: Record<string, unknown>;
+  /** What human approvers told this run so far, oldest first. */
+  steering: readonly RunMessage[];
 }
 
 export interface ProposerResult {
@@ -72,6 +75,9 @@ const PROMPT_VERSION = 'v1';
  */
 export class RulesProposer implements Proposer {
   async propose(input: ProposerInput): Promise<ProposerResult> {
+    // `steering` is ignored on purpose: this proposer is the deterministic
+    // fallback, and a ranking that moved with a reviewer's note would stop
+    // being reproducible.
     const { node, event, data } = input;
     switch (node.config.output) {
       case 'candidate_choice':
@@ -279,7 +285,10 @@ export class LlmProposer implements Proposer {
       `Trigger event: ${JSON.stringify(event)}`,
       `Tool data: ${JSON.stringify(data)}`,
       'Respond with the structured output. Justify the decision with rationale and evidence entries.',
-    ].join('\n\n');
+      steeringSection(input.steering),
+    ]
+      .filter((part) => part !== '')
+      .join('\n\n');
 
     let lastError: unknown = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -343,6 +352,25 @@ export class LlmProposer implements Proposer {
     const topCandidateId = eligible.has(result.topCandidateId) ? result.topCandidateId : firstEligible;
     return { ...result, employeeIds: filtered, topCandidateId };
   }
+}
+
+/**
+ * The reviewer's steering as a prompt block, appended last so it is the final
+ * thing the model reads. Every line is quoted so a note cannot be read as
+ * prompt structure or tool data, and the header states the precedence it has:
+ * above the default ranking, below the policy data.
+ */
+function steeringSection(messages: readonly RunMessage[]): string {
+  if (messages.length === 0) return '';
+  const quoted = messages
+    .flatMap((message) => message.content.split('\n').map((line) => `> ${line}`))
+    .join('\n');
+  return [
+    'A human reviewer has instructed this run. Their instruction takes precedence over your default ranking; keep satisfying the policy data above where the two disagree.',
+    '--- BEGIN HUMAN REVIEWER INSTRUCTION ---',
+    quoted,
+    '--- END HUMAN REVIEWER INSTRUCTION ---',
+  ].join('\n');
 }
 
 /** The keys the model must return, listed for the prompt. */

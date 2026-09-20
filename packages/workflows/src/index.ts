@@ -7,6 +7,8 @@ export * from './kinds/registry.ts';
 export * from './references/grammar.ts';
 export * from './references/resolve.ts';
 export * from './references/static-check.ts';
+export * from './builder/operations.ts';
+export * from './builder/chat.ts';
 export * from './dsl.ts';
 export * from './catalogue.ts';
 export * from './validate.ts';

@@ -151,11 +151,19 @@ export const approvalSchema = z.object({
   proposal: approvalProposalSchema,
   decidedBy: z.string().nullable(),
   decisionReason: z.string().nullable(),
+  /** What the approver told the workflow to do, when they said more than yes or no. */
+  feedback: z.string().nullable(),
 });
 
 export const decisionRequestSchema = z.object({
   decision: z.enum(['approve', 'reject']),
   reason: z.string().min(1).max(500),
+  /**
+   * Steering for the workflow, not for the audit trail: it becomes the next
+   * human message in the run, so the nodes after this approval decide with it
+   * in front of them.
+   */
+  feedback: z.string().trim().min(1).max(1000).optional(),
 });
 
 export const decisionResponseSchema = z.object({

@@ -214,11 +214,20 @@ export default function RunDetailPage() {
       ) : null}
 
       {approval !== null && approval.status !== 'pending' ? (
-        <p className="rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-3 text-xs text-[var(--color-ink-muted)]">
-          Approval <span className="font-medium uppercase" style={{ color: approval.status === 'approved' ? 'var(--color-success)' : 'var(--color-danger)' }}>{approval.status}</span>
-          {approval.decidedBy ? <> by {approval.decidedBy}</> : null}
-          {approval.decisionReason ? <> — “{approval.decisionReason}”</> : null}
-        </p>
+        <div className="flex flex-col gap-2 rounded-lg border border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-3 text-xs text-[var(--color-ink-muted)]">
+          <p>
+            Approval{' '}
+            <span className="font-medium uppercase" style={{ color: approval.status === 'approved' ? 'var(--color-success)' : 'var(--color-danger)' }}>{approval.status}</span>
+            {approval.decidedBy ? <> by {approval.decidedBy}</> : null}
+            {approval.decisionReason ? <> — “{approval.decisionReason}”</> : null}
+          </p>
+          {approval.feedback === null ? null : (
+            <p className="border-l-2 pl-3" style={{ borderColor: 'var(--color-primary)' }}>
+              Told the workflow:{' '}
+              <span className="text-[var(--color-ink)]">“{approval.feedback}”</span>
+            </p>
+          )}
+        </div>
       ) : null}
 
       <section className="rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-5">
