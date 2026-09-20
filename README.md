@@ -154,9 +154,12 @@ Both are driven by the services, not by a test hook. The simulator calls the sam
 
 | Path | What it is |
 |---|---|
+| `AGENTS.md` | How to work in this repo: the layout, the house rules, ripwire for planning and changes, the verification gates, and the traps |
 | `docs/design.md` | The design brief. Domain model, event catalogue, run lifecycle, reliability model |
 | `docs/adr/` | Fifteen decisions with their trade-offs |
 | `docs/jd-mapping.md` | Each requirement from the job description mapped to the artifact that answers it |
+| `docs/demo-script.md` | The recording script: beats, the prompts to paste, expected results, timings |
+| `docs/loom-script.md` | The short screen-recording script |
 | `packages/contracts` | Event envelope, event registry, API DTOs, actor context, condition DSL |
 | `packages/workflows` | Node-kind registry, reference grammar and resolver, validator, compiler, demo templates |
 | `packages/eventbus` | Backbone port, Redis Streams binding, in-memory binding for tests |
