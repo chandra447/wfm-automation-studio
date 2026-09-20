@@ -19,6 +19,7 @@ import {
 import { ChatCircle, CornersOut, GearSix, ListChecks, Minus, Plus, SquaresFour } from '@phosphor-icons/react';
 import {
   demoWorkflows,
+  edgeRefusal,
   emptyLayout,
   validateWorkflow,
   workflowNodeTypeSchema,
@@ -217,23 +218,11 @@ function FlowCanvas({
   onNodeDragStop: (moves: Record<string, XYPosition>) => void;
   onNodeChange: (node: WorkflowNode, coalesceKey?: string) => void;
   onViewportChange: (viewport: CanvasLayout['viewport']) => void;
+  /** Whether a drag may land. The rule is the DSL's, so it is asked once, above. */
+  connectionAllowed: (connection: Connection | Edge) => boolean;
 }) {
   const { screenToFlowPosition } = useReactFlow();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-
-  const connectionAllowed = useCallback(
-    (connection: Connection | Edge): boolean => {
-      const { source, target, sourceHandle } = connection;
-      if (!source || !target || source === target) return false;
-      const sourceType = nodeTypeById[source];
-      const targetType = nodeTypeById[target];
-      if (!sourceType || !targetType) return false;
-      if (inputsOf(targetType).length === 0 || sourceType === 'end') return false;
-      if (!isEdgePort(sourceHandle ?? 'always')) return false;
-      return legalPortsFor(sourceType).includes(isEdgePort(sourceHandle) ? sourceHandle : 'always');
-    },
-    [nodeTypeById],
-  );
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -272,12 +261,7 @@ function FlowCanvas({
           onConnect={(connection: Connection) => {
             const { source, target, sourceHandle } = connection;
             if (!source || !target || source === target) return;
-            const sourceType = nodeTypeById[source];
-            const targetType = nodeTypeById[target];
-            if (!sourceType || !targetType) return;
-            if (inputsOf(targetType).length === 0 || sourceType === 'end') return;
             const port: EdgePort = isEdgePort(sourceHandle) ? sourceHandle : 'always';
-            if (!legalPortsFor(sourceType).includes(port)) return;
             onConnect({ from: source, to: target, port });
           }}
           onNodesDelete={(deleted) => onNodesDelete(deleted.map((node) => node.id))}
@@ -558,6 +542,23 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
     return () => window.removeEventListener('keydown', handleKey);
   }, [store, saveNow]);
 
+  /**
+   * Whether a drag may land. The rule is the DSL's, so the canvas asks it
+   * rather than keeping its own copy: a port carries one target, a trigger
+   * takes no input, and an end node emits nothing. `ignore` is the edge being
+   * re-checked, which must not refuse itself.
+   */
+  const connectionAllowed = useCallback(
+    (connection: Connection | Edge): boolean => {
+      const { source, target, sourceHandle } = connection;
+      if (!source || !target) return false;
+      const port: EdgePort = isEdgePort(sourceHandle) ? sourceHandle : 'always';
+      const candidate = { from: source, to: target, port };
+      return edgeRefusal(snapshot.definition, candidate, { ignore: candidate }) === null;
+    },
+    [snapshot.definition],
+  );
+
   const selectNode = useCallback((nodeId: string | null) => {
     setSelectedId(nodeId);
     setInspectorDismissedFor(null);
@@ -818,6 +819,7 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
             onNodeDragStop={store.updatePositions}
             onNodeChange={store.updateNode}
             onViewportChange={store.updateViewport}
+            connectionAllowed={connectionAllowed}
           />
         </BuilderShell>
       </ReactFlowProvider>

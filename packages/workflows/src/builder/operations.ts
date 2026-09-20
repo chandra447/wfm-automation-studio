@@ -7,14 +7,8 @@ import {
   type WorkflowNode,
   type WorkflowNodeType,
 } from '../dsl.ts';
-import {
-  defaultNodeOf,
-  kindFor,
-  inputsOf,
-  legalPortsByNodeType,
-  workflowNodeSchema,
-  workflowNodeTypeSchema,
-} from '../kinds/registry.ts';
+import { defaultNodeOf, kindFor, workflowNodeSchema, workflowNodeTypeSchema } from '../kinds/registry.ts';
+import { edgeRefusal } from '../edge-rules.ts';
 import { NODE_HEIGHT, NODE_WIDTH, edgePortSchema, nodeIdSchema } from '../primitives.ts';
 import type { CanvasLayout } from '../templates/layout.ts';
 import { validateWorkflow, validationErrors } from '../validate.ts';
@@ -218,41 +212,10 @@ function connect(draft: Draft, operation: Extract<BuilderOperation, { op: 'conne
     reject(draft, operation.op, missing, `no node "${missing}"`);
     return;
   }
-  const ports = legalPortsByNodeType[from.type];
-  if (!ports.includes(operation.from.port)) {
-    reject(
-      draft,
-      operation.op,
-      from.id,
-      `a ${from.type} node has no "${operation.from.port}" port; it has ${ports.join(', ')}`,
-    );
-    return;
-  }
-  if (inputsOf(to.type).length === 0) {
-    reject(draft, operation.op, to.id, `a ${to.type} node cannot be targeted by an edge`);
-    return;
-  }
-  if (from.id === to.id) {
-    reject(draft, operation.op, from.id, 'a node cannot feed itself');
-    return;
-  }
-  const duplicate = draft.edges.some(
-    (edge) => edge.from === operation.from.node && edge.port === operation.from.port && edge.to === operation.to,
-  );
-  if (duplicate) {
-    reject(draft, operation.op, from.id, `already connected to ${operation.to} on ${operation.from.port}`);
-    return;
-  }
-  const portTaken = draft.edges.find(
-    (edge) => edge.from === operation.from.node && edge.port === operation.from.port,
-  );
-  if (portTaken) {
-    reject(
-      draft,
-      operation.op,
-      from.id,
-      `"${operation.from.port}" already goes to ${portTaken.to}, and a port carries one target`,
-    );
+  const candidate: WorkflowEdge = { from: operation.from.node, to: operation.to, port: operation.from.port };
+  const refusal = edgeRefusal({ nodes: [...draft.nodes.values()], edges: draft.edges }, candidate);
+  if (refusal !== null) {
+    reject(draft, operation.op, from.id, refusal);
     return;
   }
   draft.edges.push({ from: operation.from.node, to: operation.to, port: operation.from.port });

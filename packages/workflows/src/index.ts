@@ -10,6 +10,7 @@ export * from './references/static-check.ts';
 export * from './builder/operations.ts';
 export * from './builder/chat.ts';
 export * from './dsl.ts';
+export * from './edge-rules.ts';
 export * from './catalogue.ts';
 export * from './validate.ts';
 export * from './compile.ts';
