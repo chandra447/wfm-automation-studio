@@ -19,7 +19,7 @@ scripts/verify.sh
   Result                   all properties verified
 ```
 
-149 tests across 24 files (`bun test packages services`), including one that throws an engine away mid-approval and finishes the run on a second instance, plus 8 end-to-end scenarios against the running stack.
+162 tests across 25 files (`bun test packages services`), including one that throws an engine away mid-approval and finishes the run on a second instance, plus 8 end-to-end scenarios against the running stack.
 
 Feature-level proof, on top of the above:
 
@@ -55,8 +55,9 @@ totals are compared against the `llm_calls` rows, not against a number the engin
 | | |
 |---|---|
 | ![overview](docs/screenshots/01-overview.webp) | ![canvas](docs/screenshots/13-builder-canvas-first.png) |
+| ![builder chat](docs/screenshots/11-builder-chat.png) | ![agent focus](docs/screenshots/15-builder-focus.png) |
 | ![validation](docs/screenshots/03-builder-validation-blocks-publish.webp) | ![awaiting approval](docs/screenshots/05-run-awaiting-approval.webp) |
-| ![builder chat](docs/screenshots/11-builder-chat.png) | ![steering](docs/screenshots/12-run-steering.png) |
+| ![steering](docs/screenshots/12-run-steering.png) | ![dashboard](docs/screenshots/07-dashboard.png) |
 
 ## What it demonstrates
 
@@ -70,7 +71,9 @@ totals are compared against the `llm_calls` rows, not against a number the engin
 - **Artifacts.** A run can render a document from its own data and attach it, which is what the run detail shows as its delivered output.
 - **Extension by declaration.** A node kind is one file plus registration lines: its config schema, ports, capabilities, canvas fields, summary, and template slots in one place. The validator's platform invariants are written against capabilities, so a new kind inherits pay-safety rules without new validator code.
 - **Steering, not just approving.** A decision carries three things: the decision routes the graph, the reason goes to the audit trail, and the feedback becomes the next human message in the run. Downstream AI nodes decide with the approver's instruction in front of them, and `{{run.feedback}}` lets an artifact quote it. Steering is advice, never authority: it changes what a model prefers, not what a policy check permits.
-- **A workflow you can describe.** The builder has a chat panel beside the canvas. The model does not write a definition; it proposes a short list of operations from a closed set, and one applier validates them against the same kind declarations the canvas uses. The client sends its current graph every turn, so the agent reasons about what is on screen, including nodes you dragged, and the applier refuses an edit that would leave the graph invalid.
+- **A workflow you can describe.** The builder has a chat panel beside the canvas, and the agent behind it works the way an engineer would: it has tools to read the graph, read the node-kind catalogue with each kind's legal configuration, read the trigger's data, add, update, move, connect and disconnect nodes, and point the canvas at what it means. It is a Deep Agents harness with a real tool loop, so a turn that adds a node reads the graph back to check its own work before answering. The model still does not write a definition: the write tools collect operations from a closed set, and one applier validates them against the same kind declarations the canvas uses. A bad call is refused with the legal alternatives named, an unfinished graph is reported as not valid yet, and the client sends its current graph every turn, so the agent reasons about what is on screen, including nodes you dragged.
+- **An agent whose work you can see.** Every turn leaves a trail under its reply: the tool calls it made with their arguments, and a line saying what it pointed at. When a turn asks the canvas to point at nodes, the canvas frames them and rings them without selecting them, so the inspector stays shut and your next click takes the canvas back. Past four tool calls the trail collapses to a count, because a fourteen-call turn would otherwise push its own answer off the panel.
+- **A conversation that stays inside its budget.** The turn above made 14 model calls and cost 137k input tokens, most of them tool results the agent had already read. The agent summarizes its own history once the conversation passes a token threshold and keeps the recent exchanges, so the twelfth turn does not pay for the first. Summary calls are ordinary model calls: they land in the same accounting table as everything else.
 - **A builder that gets out of the way.** The graph owns the screen. The component list, the agent conversation, the node inspector, the validation log, and the zoom control all float over it, and the components panel is closed until you ask for it. Each node card carries its kind's icon, name, one-line purpose, the fields that matter for that kind editable in place, and one labelled row per port with the handle on the card's edge.
 
 ## Architecture
@@ -142,7 +145,7 @@ Both are driven by the services, not by a test hook. The simulator calls the sam
 | Path | What it is |
 |---|---|
 | `docs/design.md` | The design brief. Domain model, event catalogue, run lifecycle, reliability model |
-| `docs/adr/` | Nine decisions with their trade-offs |
+| `docs/adr/` | Fourteen decisions with their trade-offs |
 | `docs/jd-mapping.md` | Each requirement from the job description mapped to the artifact that answers it |
 | `packages/contracts` | Event envelope, event registry, API DTOs, actor context, condition DSL |
 | `packages/workflows` | Node-kind registry, reference grammar and resolver, validator, compiler, demo templates |

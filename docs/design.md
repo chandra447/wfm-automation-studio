@@ -355,9 +355,21 @@ The canvas is the system of record for the graph, and a chat turn is a proposal 
 client sends its current definition and layout with every message, so the agent reasons about what is
 on screen, including nodes the user has dragged, rather than about what it last produced.
 
-The model does not write JSON for a definition. It answers with a reply and a list of operations from
-a closed set: add, update, remove, move, connect, disconnect. One applier turns that list into a
-definition, and it is the same applier a test or a template would use.
+The agent runs on Deep Agents with a tool loop, because a single model call that is handed the whole
+graph and the whole catalogue cannot look anything up and cannot check its own work. Twelve tools
+cover what an engineer would need in front of the canvas:
+
+| Reads | Writes | Selection |
+|---|---|---|
+| `read_workflow`, `get_node`, `list_node_kinds`, `read_data_catalogue` | `add_node`, `update_node`, `remove_node`, `move_node`, `connect`, `disconnect` | `select_nodes`, `select_edges` |
+
+The read tools answer with the current graph and the kinds' legal configuration, and the selection
+tools ask the canvas to point at nodes and edges without changing anything.
+
+The model does not write JSON for a definition. The write tools collect operations from a closed set,
+add, update, remove, move, connect, disconnect, and one applier turns that list into a definition. It
+is the same applier a test or a template would use, and it stays the only authority: a tool call
+cannot mutate the graph, only propose.
 
 The applier is where the safety lives, and it is deliberately unforgiving:
 
@@ -366,13 +378,31 @@ The applier is where the safety lives, and it is deliberately unforgiving:
 - an illegal port is refused with the legal list, read from the kind's own declaration;
 - an operation that cannot apply is reported and skipped, so one bad guess does not discard a good
   plan;
+- a refused call and an unfinished graph are told apart. A bad port is refused; adding a node to a
+  graph that cannot validate yet is recorded as not valid yet. Judging the whole plan on every call
+  instead left the first refusal in the list, so every later call reported a mistake the agent had
+  already fixed;
 - an edit that would leave the graph with more validation errors than it started with is dropped
   whole, because the studio refuses to store an invalid draft and a half-applied edit is harder to
   explain than a refused one.
 
+The reply carries the trail and the focus, so the panel can show the tool calls a turn made and the
+canvas can frame the nodes it meant. Pointing is not selecting: the ring and the frame are the whole
+affordance, `selectedId` is untouched, and the author's next click takes the canvas back.
+
 The conversation is stored per workflow, so a reload resumes the thread and what the agent was told
 sits next to the graph it produced. The graph itself is still saved by the ordinary draft autosave:
-the chat endpoint is stateless with respect to the definition, which keeps one writer for the canvas.
+the chat endpoint is stateless with respect to the definition, which keeps one writer for the canvas,
+and the harness holds no checkpointer copy of its own.
+
+A turn is many model calls, and a turn that reads a nine-node graph a handful of times cost 137k
+input tokens. The agent therefore summarizes its own history once the conversation passes a token
+threshold, keeping the recent exchanges and evicting the rest into the harness's state backend. The
+thresholds are the platform's rather than the harness's computed defaults, because those are derived
+from a model profile LangChain ships and these models are described by `config/models.jsonl`. The
+summary is written by the answering model, so no second provider has to resolve, and the summary call
+is an ordinary model call: it lands in `llm_calls` with everything else.
+
 
 ## 8. Reliability model
 

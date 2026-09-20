@@ -5,7 +5,7 @@
  * Every assertion reads observable state: run rows, approval records, run
  * timeline events, and the domain services' own API responses.
  */
-import { describe, expect, test } from 'bun:test';
+import { beforeAll, describe, expect, test } from 'bun:test';
 import type { Approval, RunDetail, RunSummary, SimulatorResponse, Timesheet, Shift } from '@wfm/contracts';
 import { waitFor } from '@wfm/testkit';
 
@@ -74,6 +74,21 @@ async function runUntil(runId: string, status: RunSummary['status']): Promise<Ru
     { description: `run ${runId} to reach ${status}`, timeoutMs: 240_000 },
   );
 }
+
+/**
+ * The suite pins the deterministic rules proposer rather than inheriting
+ * whatever provider the demo was last left on. Against the real vendor the
+ * ranking call in this scenario has taken 40 seconds on its own, which spends
+ * the test's patience on the network instead of on the engine.
+ */
+beforeAll(async () => {
+  const response = await call(`${studioApi}/provider-settings`, {
+    method: 'PUT',
+    headers: headersFor('manager'),
+    body: { kind: 'none' },
+  });
+  expect(response.status).toBe(200);
+});
 
 describe('scenario A — coverage rescue', () => {
   let shiftId: string;
@@ -214,11 +229,6 @@ describe('scenario B — payroll-safe timesheet exception', () => {
    * checks the proposal, the tokens, and the cost against the real provider.
    */
   test('a missed break is drafted, approved by People Ops, and applied once', async () => {
-    await call(`${studioApi}/provider-settings`, {
-      method: 'PUT',
-      headers: headersFor('manager'),
-      body: { kind: 'none' },
-    });
     const runsBefore = await runIds();
     const simulated = await call<SimulatorResponse>(`${studioApi}/simulator/payroll_exception`, {
       method: 'POST',
