@@ -30,8 +30,6 @@ const positionSchema = z.object({ x: z.number(), y: z.number() });
 
 const portRefSchema = z.object({ node: nodeIdSchema, port: edgePortSchema });
 
-const noteSchema = z.string().max(200).optional();
-
 export const builderOperationSchema = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('add_node'),
@@ -40,37 +38,31 @@ export const builderOperationSchema = z.discriminatedUnion('op', [
     label: z.string().min(1).max(80).optional(),
     config: z.record(z.string(), z.unknown()).optional(),
     position: positionSchema.optional(),
-    note: noteSchema,
   }),
   z.object({
     op: z.literal('update_node'),
     id: nodeIdSchema,
     label: z.string().min(1).max(80).optional(),
     config: z.record(z.string(), z.unknown()).optional(),
-    note: noteSchema,
   }),
   z.object({
     op: z.literal('remove_node'),
     id: nodeIdSchema,
-    note: noteSchema,
   }),
   z.object({
     op: z.literal('move_node'),
     id: nodeIdSchema,
     position: positionSchema,
-    note: noteSchema,
   }),
   z.object({
     op: z.literal('connect'),
     from: portRefSchema,
     to: nodeIdSchema,
-    note: noteSchema,
   }),
   z.object({
     op: z.literal('disconnect'),
     from: portRefSchema,
     to: nodeIdSchema,
-    note: noteSchema,
   }),
 ]);
 
@@ -221,7 +213,8 @@ function connect(draft: Draft, operation: Extract<BuilderOperation, { op: 'conne
   const from = draft.nodes.get(operation.from.node);
   const to = draft.nodes.get(operation.to);
   if (!from || !to) {
-    reject(draft, operation.op, operation.from.node, `no node "${from ? operation.to : operation.from.node}"`);
+    const missing = from ? operation.to : operation.from.node;
+    reject(draft, operation.op, missing, `no node "${missing}"`);
     return;
   }
   const ports = legalPortsByNodeType[from.type];

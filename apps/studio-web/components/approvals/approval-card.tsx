@@ -148,6 +148,7 @@ export function ApprovalCard({ approval, onDecided, className }: ApprovalCardPro
           value={feedback}
           onChange={(event) => setFeedback(event.target.value)}
           placeholder="e.g. Cover the shift with the cheapest qualified nurse and hold the offer until 06:00"
+          maxLength={1000}
           rows={2}
         />
         <p className="text-[11px] text-[var(--color-ink-faint)]">

@@ -108,13 +108,15 @@ export function ChatPanel({
   const headersRef = useRef(headers);
   headersRef.current = headers;
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  /** A send that lands before the history read does not get overwritten by it. */
+  const sentRef = useRef(false);
 
   useEffect(() => {
     let alive = true;
     void (async () => {
       try {
         const history = await fetchBuilderChat(workflowId, headersRef.current);
-        if (alive) setMessages(history.messages);
+        if (alive && !sentRef.current) setMessages(history.messages);
       } catch (cause) {
         if (alive) setError(failureLine(cause));
       }
@@ -133,8 +135,13 @@ export function ChatPanel({
           apiFetch<ProviderSettings>('/provider-settings', { headers: headersRef.current }),
         ]);
         if (!alive) return;
-        setModels(catalogue);
-        setModelChoice(settings.model ?? catalogue.find((model) => model.default)?.id ?? TENANT_DEFAULT);
+        // Only the family this tenant's provider speaks: a model id from the
+        // other one would be sent to their own vendor and come back a 404.
+        const family = settings.kind === 'anthropic' ? 'anthropic' : 'openai-compatible';
+        const usable = catalogue.filter((model) => model.provider === family);
+        setModels(usable);
+        const configured = usable.some((model) => model.id === settings.model) ? settings.model : null;
+        setModelChoice(configured ?? usable.find((model) => model.default)?.id ?? TENANT_DEFAULT);
       } catch {
         if (alive) setModels([]);
       }
@@ -171,6 +178,7 @@ export function ChatPanel({
       ...(modelChoice === TENANT_DEFAULT ? {} : { model: modelChoice }),
     };
     const at = new Date().toISOString();
+    sentRef.current = true;
     setMessages((previous) => [
       ...previous,
       {

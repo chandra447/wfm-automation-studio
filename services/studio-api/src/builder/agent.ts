@@ -45,12 +45,12 @@ const UNREADABLE_REPLY = "I could not read the model's answer, so the graph is u
 
 /** The operation list, mirroring the six shapes builderOperationSchema accepts. */
 const OPERATION_LINES: readonly string[] = [
-  '{ "op": "add_node", "id": string, "type": <kind>, "label"?: string, "config"?: object, "position"?: { "x": number, "y": number }, "note"?: string }',
-  '{ "op": "update_node", "id": string, "label"?: string, "config"?: object, "note"?: string }',
-  '{ "op": "remove_node", "id": string, "note"?: string }',
-  '{ "op": "move_node", "id": string, "position": { "x": number, "y": number }, "note"?: string }',
-  '{ "op": "connect", "from": { "node": string, "port": <port> }, "to": string, "note"?: string }',
-  '{ "op": "disconnect", "from": { "node": string, "port": <port> }, "to": string, "note"?: string }',
+  '{ "op": "add_node", "id": string, "type": <kind>, "label"?: string, "config"?: object, "position"?: { "x": number, "y": number } }',
+  '{ "op": "update_node", "id": string, "label"?: string, "config"?: object }',
+  '{ "op": "remove_node", "id": string }',
+  '{ "op": "move_node", "id": string, "position": { "x": number, "y": number } }',
+  '{ "op": "connect", "from": { "node": string, "port": <port> }, "to": string }',
+  '{ "op": "disconnect", "from": { "node": string, "port": <port> }, "to": string }',
 ];
 
 /** The id a kind's defaults are read under; it never reaches a prompt. */
@@ -86,8 +86,12 @@ export class BuilderAgent {
   async chat(input: BuilderChatInput): Promise<BuilderChatResponse> {
     const { workflowId, tenantId, request } = input;
     const history = await this.#store.listTurns(workflowId, tenantId, PROMPT_TURNS);
-    // The user's turn is stored before the model is called, so a turn that never
-    // answers still leaves the message the agent was given.
+    // Resolved before anything is stored: a turn the studio cannot run, because
+    // the tenant has no provider or asked for a model outside the catalogue, is
+    // a request error and must not leave an unanswered question in the thread.
+    const provider = await this.#providerFor(tenantId, request.model);
+    // Past this point the turn is real, so the message the agent was given is
+    // stored before the call: a model that never answers still leaves what it saw.
     await this.#store.appendTurn({
       workflowId,
       tenantId,
@@ -98,7 +102,6 @@ export class BuilderAgent {
       rejected: [],
     });
 
-    const provider = await this.#providerFor(tenantId, request.model);
     const completion = await this.#complete(provider, { tenantId, workflowId }, {
       system: this.#system,
       user: userContent(request, history),

@@ -20,7 +20,7 @@ import type { EngineService, SaveWorkflowRequest } from './engine/contract.ts';
 import { engineOf } from './engine/runtime.ts';
 import { createEngineFromEnv } from './engine/index.ts';
 import { createLlmServices, llmRouteHandlers, type LlmRouteHandlers } from './llm/index.ts';
-import { builderRouteHandlers, type BuilderRouteHandlers } from './builder/index.ts';
+import { builderRouteHandlers, BuilderRequestError, type BuilderRouteHandlers } from './builder/index.ts';
 import { connectStudioDb } from './engine/db.ts';
 import { dashboardHandler } from './dashboard/index.ts';
 
@@ -128,6 +128,11 @@ export const app = new Elysia()
       return apiError(errorCodes.validation, 'Request body failed schema validation', {
         issues: error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })),
       });
+    }
+    if (error instanceof BuilderRequestError) {
+      // The message names what to fix, so it is the response, not a detail of one.
+      set.status = 422;
+      return apiError(errorCodes.validation, error.message);
     }
     const message = error instanceof Error ? error.message : String(error);
     if (message.startsWith('forbidden:')) {

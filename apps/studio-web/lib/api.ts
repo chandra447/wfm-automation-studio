@@ -1,6 +1,7 @@
 'use client';
 
 import type { RunEvent } from '@wfm/contracts';
+import { builderChatResponseSchema } from '@wfm/workflows';
 import type { BuilderChatHistory, BuilderChatRequest, BuilderChatResponse } from '@wfm/workflows';
 
 export const studioApiUrl = process.env.NEXT_PUBLIC_STUDIO_API_URL ?? 'http://127.0.0.1:4103';
@@ -70,7 +71,10 @@ export async function sendBuilderMessage(
   body: BuilderChatRequest,
   headers: Record<string, string>,
 ): Promise<BuilderChatResponse> {
-  return apiFetch<BuilderChatResponse>(`/workflows/${workflowId}/chat`, { method: 'POST', headers, body });
+  // Parsed rather than trusted: a response that does not match the contract
+  // would otherwise reach the canvas as an undefined definition.
+  const payload = await apiFetch<unknown>(`/workflows/${workflowId}/chat`, { method: 'POST', headers, body });
+  return builderChatResponseSchema.parse(payload);
 }
 
 /** SSE over fetch so actor headers survive; EventSource cannot send headers. */

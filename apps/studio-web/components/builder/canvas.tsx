@@ -598,9 +598,9 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
                 eventType={triggerEventType}
                 disabled={!loaded || offline}
                 onApplied={(next, nextDiagnostics) => {
-                  // Not `clean`: the agent's graph is newer than the server's
-                  // until the autosave lands, so it belongs in the mirror.
-                  store.reset(next);
+                  // The agent's graph is unsaved work like any other edit, so it
+                  // is mirrored and the previous graph stays undoable.
+                  store.applyExternal(next);
                   setServerDiagnostics(null);
                   if (nextDiagnostics.length > 0) setDiagnosticsOpen(true);
                 }}

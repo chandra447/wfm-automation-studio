@@ -23,6 +23,12 @@ export interface BuilderStore {
   updateViewport: (viewport: CanvasLayout['viewport']) => void;
   updateMeta: (patch: { name?: string; description?: string; enabled?: boolean }) => void;
   reset: (snapshot: BuilderSnapshot, opts?: { clean?: boolean }) => void;
+  /**
+   * Adopts a snapshot that came from outside the editor (an agent turn). The
+   * current graph stays on the undo stack, and the mirror is written, because
+   * until the autosave lands this is unsaved work like any other edit.
+   */
+  applyExternal: (snapshot: BuilderSnapshot) => void;
   markSaved: () => void;
   undo: () => void;
   redo: () => void;
@@ -187,6 +193,19 @@ export function useBuilderStore(workflowId: string, initial: BuilderSnapshot): B
     [workflowId],
   );
 
+  const applyExternal = useCallback(
+    (next: BuilderSnapshot) => {
+      pastRef.current = [...pastRef.current, cloneSnapshot(snapshotRef.current)].slice(-HISTORY_LIMIT);
+      futureRef.current = [];
+      lastKeyRef.current = null;
+      snapshotRef.current = cloneSnapshot(next);
+      setSnapshot(snapshotRef.current);
+      setHistoryTick((tick) => tick + 1);
+      writeLocalDraft(workflowId, snapshotRef.current);
+    },
+    [workflowId],
+  );
+
   const markSaved = useCallback(() => {
     writeLocalDraft(workflowId, snapshotRef.current);
   }, [workflowId]);
@@ -229,6 +248,7 @@ export function useBuilderStore(workflowId: string, initial: BuilderSnapshot): B
       updateViewport,
       updateMeta,
       reset,
+      applyExternal,
       markSaved,
       undo,
       redo,
