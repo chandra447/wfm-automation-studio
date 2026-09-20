@@ -98,6 +98,25 @@ function checkPorts(graph: Graph, diagnostics: Diagnostic[]): void {
       }
     }
 
+    // One port carries one target. The engine routes a node's outgoing edges
+    // through a map keyed by port, so a second edge on the same port would
+    // overwrite the first and LangGraph would refuse to compile the graph,
+    // because the target it can no longer see has no incoming edge at all.
+    const claimed: Record<string, string> = {};
+    for (const edge of graph.outgoing[node.id] ?? []) {
+      const first = claimed[edge.port];
+      if (first !== undefined) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'PORT_ALREADY_USED',
+          message: `A ${node.type} node already sends "${edge.port}" to "${first}". A port carries one target, so this edge would replace it.`,
+          nodeId: node.id,
+        });
+        continue;
+      }
+      claimed[edge.port] = edge.to;
+    }
+
     for (const requirement of kind.requiredPorts) {
       if (!usedPorts.includes(requirement.port)) {
         diagnostics.push({

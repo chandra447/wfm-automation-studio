@@ -158,6 +158,12 @@ describe('structural validation', () => {
     expect(codes(definition)).toContain('PORT_MISSING');
   });
 
+  test('a second edge on a port a node already routes is rejected', () => {
+    const definition = structuredClone(coverageRescueWorkflow);
+    definition.edges.push({ from: 'send_offers', to: 'filled_end', port: 'always' });
+    expect(codes(definition)).toContain('PORT_ALREADY_USED');
+  });
+
   test('an edge into a kind that declares no input is rejected', () => {
     const definition = structuredClone(coverageRescueWorkflow);
     definition.edges.push({ from: 'cover_note', to: 'when_shift_cancelled', port: 'always' });

@@ -243,6 +243,18 @@ function connect(draft: Draft, operation: Extract<BuilderOperation, { op: 'conne
     reject(draft, operation.op, from.id, `already connected to ${operation.to} on ${operation.from.port}`);
     return;
   }
+  const portTaken = draft.edges.find(
+    (edge) => edge.from === operation.from.node && edge.port === operation.from.port,
+  );
+  if (portTaken) {
+    reject(
+      draft,
+      operation.op,
+      from.id,
+      `"${operation.from.port}" already goes to ${portTaken.to}, and a port carries one target`,
+    );
+    return;
+  }
   draft.edges.push({ from: operation.from.node, to: operation.to, port: operation.from.port });
   draft.applied.push(`connected ${operation.from.node} --${operation.from.port}--> ${operation.to}`);
 }

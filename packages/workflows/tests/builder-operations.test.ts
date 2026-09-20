@@ -74,6 +74,14 @@ describe('applyOperations', () => {
     expect(outcome.definition.edges).toHaveLength(definition.edges.length);
   });
 
+  test('a second target on a port that is already routed is refused', () => {
+    const outcome = run([{ op: 'connect', from: { node: 'send_offers', port: 'always' }, to: 'filled_end' }]);
+
+    expect(outcome.applied).toEqual([]);
+    expect(outcome.rejected[0]?.reason).toBe('"always" already goes to cover_note, and a port carries one target');
+    expect(outcome.definition.edges).toHaveLength(definition.edges.length);
+  });
+
   test('an edge into a kind that takes no input is refused with the kind named', () => {
     const outcome = run([{ op: 'connect', from: { node: 'cover_note', port: 'always' }, to: 'when_shift_cancelled' }]);
 
