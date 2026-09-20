@@ -99,6 +99,45 @@ describe.skipIf(!available)('transactional outbox', () => {
     expect(bus.published(tenantId).length).toBe(0);
   });
 
+  test('an unparseable row is poisoned instead of retried forever', async () => {
+    const poisonId = crypto.randomUUID();
+    await sql`
+      INSERT INTO ${sql(table)} (id, tenant_id, event_id, event_type, payload)
+      VALUES (${poisonId}, ${tenantId}, ${crypto.randomUUID()}, 'shift.cancelled', ${sql.json({ not: 'an envelope' })})
+    `;
+
+    const poisoned: Array<{ id: string; eventType: string }> = [];
+    const bus = new InMemoryEventBus();
+    const publisher = new OutboxPublisher({
+      sql,
+      bus,
+      table,
+      pollMs: 10,
+      maxAttempts: 2,
+      onPoison: async (row) => {
+        poisoned.push({ id: row.id, eventType: row.eventType });
+      },
+    });
+
+    await publisher.drain();
+    // The backoff window keeps it out of the second pass, so bring it due.
+    await sql`UPDATE ${sql(table)} SET available_at = now(), claimed_at = NULL WHERE id = ${poisonId}`;
+    await publisher.drain();
+    await publisher.stop();
+
+    const rows = await sql<Array<{ poisoned_at: Date | null; attempts: number }>>`
+      SELECT poisoned_at, attempts FROM ${sql(table)} WHERE id = ${poisonId}
+    `;
+    expect(rows[0]?.poisoned_at).not.toBeNull();
+    expect(poisoned.map((entry) => entry.id)).toEqual([poisonId]);
+
+    // Poisoned rows leave the claim window entirely.
+    const third = new OutboxPublisher({ sql, bus, table, pollMs: 10, maxAttempts: 2 });
+    const published = await third.drain();
+    await third.stop();
+    expect(published).toBe(0);
+  });
+
   test('a failing publish is retried later rather than dropped', async () => {
     const event = shiftUnfilled();
     await sql.begin(async (tx) => {

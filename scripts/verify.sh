@@ -50,7 +50,10 @@ if bun run db:migrate >"$LOG_DIR/migrate.log" 2>&1; then pass "migrations applie
 step "3. Seed"
 if bun run scripts/seed.ts >"$LOG_DIR/seed.log" 2>&1; then pass "demo data seeded"; else fail "seed failed (see .verify/seed.log)"; fi
 
-step "4. Services"
+step "4. Typecheck"
+if bun run typecheck >"$LOG_DIR/typecheck.log" 2>&1; then pass "workspace typechecks"; else fail "typecheck failed (see .verify/typecheck.log)"; fi
+
+step "5. Services"
 bun run --cwd services/rostering-service start >"$LOG_DIR/rostering.log" 2>&1 & PIDS+=($!)
 bun run --cwd services/time-attendance-service start >"$LOG_DIR/attendance.log" 2>&1 & PIDS+=($!)
 bun run --cwd services/studio-api start >"$LOG_DIR/studio-api.log" 2>&1 & PIDS+=($!)
@@ -60,7 +63,7 @@ wait_for_http "http://127.0.0.1:4101/health" "rostering-service" || true
 wait_for_http "http://127.0.0.1:4102/health" "time-attendance-service" || true
 wait_for_http "http://127.0.0.1:4103/health" "studio-api" || true
 
-step "5. End-to-end scenarios"
+step "6. End-to-end scenarios"
 if bun test tests/e2e >"$LOG_DIR/e2e.log" 2>&1; then
   pass "coverage rescue, payroll exception, idempotency, role checks"
   tail -n 12 "$LOG_DIR/e2e.log" | sed 's/^/    /'

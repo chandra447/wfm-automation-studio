@@ -11,14 +11,15 @@ scripts/verify.sh
   1. Infrastructure        PASS postgres and redis are healthy
   2. Migrations            PASS migrations applied
   3. Seed                  PASS demo data seeded
-  4. Services              PASS rostering-service is up
+  4. Typecheck             PASS workspace typechecks
+  5. Services              PASS rostering-service is up
                            PASS time-attendance-service is up
                            PASS studio-api is up
-  5. End-to-end scenarios  PASS coverage rescue, payroll exception, idempotency, role checks
+  6. End-to-end scenarios  PASS coverage rescue, payroll exception, idempotency, role checks
   Result                   all properties verified
 ```
 
-94 tests across 16 files (`bun test packages services`), plus 7 end-to-end scenarios against the running stack. The UI was exercised in a real browser, not just built: the canvas renders the compiled graph, deleting the approval node disables Publish with the offending node named, the approval card shows the rationale, evidence and pay impact, and approving resumes the run to `succeeded` with the shift moving to `offered`.
+94 tests across 16 files (`bun test packages services`), including one that throws an engine away mid-approval and finishes the run on a second instance, plus 8 end-to-end scenarios against the running stack. The UI was exercised in a real browser, not just built: the canvas renders the compiled graph, deleting the approval node disables Publish with the offending node named, the approval card shows the rationale, evidence and pay impact, and approving resumes the run to `succeeded` with the shift moving to `offered`.
 
 | | |
 |---|---|

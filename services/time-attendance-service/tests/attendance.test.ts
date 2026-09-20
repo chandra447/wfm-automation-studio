@@ -187,6 +187,8 @@ describe('time-attendance service', () => {
     const raised = eventsOf('timesheet.exception_raised', timesheetId);
     expect(raised).toHaveLength(1);
     const exception = raised[0]!;
+    expect(exception.eventType).toBe('timesheet.exception_raised');
+    if (exception.eventType !== 'timesheet.exception_raised') throw new Error('unreachable event type');
     expect(exception.payload).toMatchObject({
       exceptionType: 'missed_break',
       overtimeMinutes: 60,

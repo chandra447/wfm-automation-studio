@@ -19,6 +19,10 @@ export interface OutboxPublisherOptions extends OutboxOptions {
   pollMs?: number;
   batchSize?: number;
   claimTimeoutSeconds?: number;
+  /** Parse or validation failures allowed before the row is poisoned. */
+  maxAttempts?: number;
+  /** Called once when a row is poisoned, so the owner can raise an alert. */
+  onPoison?: (row: { id: string; tenantId: string; eventType: string }, reason: string) => Promise<void>;
   onError?: (error: unknown, event: AnyWfmEvent | null) => void;
 }
 
@@ -35,8 +39,10 @@ export async function ensureOutboxTable(sql: Sql, options: OutboxOptions = {}): 
       created_at timestamptz NOT NULL DEFAULT now(),
       claimed_at timestamptz,
       available_at timestamptz NOT NULL DEFAULT now(),
-      published_at timestamptz
+      published_at timestamptz,
+      poisoned_at timestamptz
     );
+    ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS poisoned_at timestamptz;
     CREATE INDEX IF NOT EXISTS ${table}_pending_idx
       ON ${table} (available_at)
       WHERE published_at IS NULL;
@@ -81,6 +87,8 @@ export class OutboxPublisher {
   readonly #pollMs: number;
   readonly #batchSize: number;
   readonly #claimTimeoutSeconds: number;
+  readonly #maxAttempts: number;
+  readonly #onPoison: ((row: { id: string; tenantId: string; eventType: string }, reason: string) => Promise<void>) | undefined;
   readonly #onError: (error: unknown, event: AnyWfmEvent | null) => void;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #running = false;
@@ -93,6 +101,8 @@ export class OutboxPublisher {
     this.#pollMs = options.pollMs ?? 250;
     this.#batchSize = options.batchSize ?? 50;
     this.#claimTimeoutSeconds = options.claimTimeoutSeconds ?? 30;
+    this.#maxAttempts = options.maxAttempts ?? 5;
+    this.#onPoison = options.onPoison;
     this.#onError = options.onError ?? (() => {});
   }
 
@@ -139,18 +149,21 @@ export class OutboxPublisher {
   }
 
   async #publishBatch(): Promise<number> {
-    const claimed = await this.#sql<Array<{ id: string; tenant_id: string; payload_text: string }>>`
+    const claimed = await this.#sql<
+      Array<{ id: string; tenant_id: string; payload_text: string; attempts: number; event_type: string }>
+    >`
       UPDATE ${this.#sql(this.#table)} SET claimed_at = now()
       WHERE id IN (
         SELECT id FROM ${this.#sql(this.#table)}
         WHERE published_at IS NULL
+          AND poisoned_at IS NULL
           AND available_at <= now()
           AND (claimed_at IS NULL OR claimed_at < now() - ${`${this.#claimTimeoutSeconds} seconds`}::interval)
         ORDER BY created_at
         LIMIT ${this.#batchSize}
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING id, tenant_id, payload::text AS payload_text
+      RETURNING id, tenant_id, payload::text AS payload_text, attempts, event_type
     `;
 
     if (claimed.length === 0) return 0;
@@ -162,11 +175,25 @@ export class OutboxPublisher {
         // handling varies by runtime, and the envelope must be an object.
         event = parseEvent(JSON.parse(row.payload_text));
       } catch (error) {
-        await this.#sql`
-          UPDATE ${this.#sql(this.#table)}
-          SET attempts = attempts + 1, claimed_at = NULL, available_at = now() + interval '1 minute'
-          WHERE id = ${row.id}
-        `;
+        const reason = error instanceof Error ? error.message : String(error);
+        // A payload that cannot be parsed will never succeed; retrying it
+        // forever would be a quiet, permanent leak. Cap the attempts and mark
+        // the row poisoned so an operator sees it instead of a log line.
+        const attempts = (row.attempts ?? 0) + 1;
+        if (attempts >= this.#maxAttempts) {
+          await this.#sql`
+            UPDATE ${this.#sql(this.#table)}
+            SET attempts = ${attempts}, poisoned_at = now(), claimed_at = NULL
+            WHERE id = ${row.id}
+          `;
+          await this.#onPoison?.({ id: row.id, tenantId: row.tenant_id, eventType: row.event_type }, reason);
+        } else {
+          await this.#sql`
+            UPDATE ${this.#sql(this.#table)}
+            SET attempts = ${attempts}, claimed_at = NULL, available_at = now() + interval '1 minute'
+            WHERE id = ${row.id}
+          `;
+        }
         this.#onError(error, null);
         continue;
       }

@@ -1,4 +1,4 @@
-import { MemorySaver } from '@langchain/langgraph';
+import { MemorySaver, type BaseCheckpointSaver } from '@langchain/langgraph';
 import { InMemoryEventBus } from '@wfm/eventbus';
 import { createLogger } from '@wfm/observability';
 import type { Sql } from 'postgres';
@@ -234,6 +234,7 @@ export function stubDomainClients(): DomainClients {
 
 export interface Harness {
   engine: EngineService;
+  databaseUrl: string;
   orchestrator: Orchestrator;
   proposer: Proposer;
   bus: InMemoryEventBus;
@@ -243,11 +244,21 @@ export interface Harness {
   drop: () => Promise<void>;
 }
 
-export async function createHarness(options?: { proposer?: Proposer }): Promise<Harness> {
-  const database: TestDatabase = await createTestDatabase(
-    'postgres://wfm:wfm@127.0.0.1:5433/studio',
-    `studio_test_${Math.random().toString(36).slice(2, 10)}`,
-  );
+export interface HarnessOptions {
+  proposer?: Proposer;
+  /** Supply a Postgres-backed saver to prove state outlives the engine instance. */
+  checkpointer?: BaseCheckpointSaver;
+  /** Reuse an existing database, e.g. to bring a second engine up over the same state. */
+  databaseUrl?: string;
+}
+
+export async function createHarness(options?: HarnessOptions): Promise<Harness> {
+  const database: TestDatabase = options?.databaseUrl
+    ? { url: options.databaseUrl, drop: async () => {} }
+    : await createTestDatabase(
+        'postgres://wfm:wfm@127.0.0.1:5433/studio',
+        `studio_test_${Math.random().toString(36).slice(2, 10)}`,
+      );
   const { sql, db } = connectStudioDb(database.url);
   await ensureStudioTables(sql);
 
@@ -271,7 +282,7 @@ export async function createHarness(options?: { proposer?: Proposer }): Promise<
     bus,
     clients: stubDomainClients(),
     proposer,
-    checkpointer: new MemorySaver(),
+    checkpointer: options?.checkpointer ?? new MemorySaver(),
     queue: queueProxy,
     logger,
     dryRun: false,
@@ -299,10 +310,11 @@ export async function createHarness(options?: { proposer?: Proposer }): Promise<
     db,
     sql,
     timeouts,
+    databaseUrl: database.url,
     drop: async () => {
       await sql.end({ timeout: 5 });
       await bus.close();
-      await database.drop();
+      if (options?.databaseUrl === undefined) await database.drop();
     },
   };
 }

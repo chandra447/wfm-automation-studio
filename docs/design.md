@@ -202,7 +202,10 @@ step transition is appended to `run_events`, which is what the UI streams.
 `queued → running → awaiting_approval → running → succeeded | failed | cancelled`
 
 - Execution is queued through BullMQ: `run.start`, `run.step`, and `approval.timeout` jobs with
-  exponential backoff, an attempts cap, and per-tenant concurrency.
+  exponential backoff, an attempts cap, and a per-tenant concurrency gate. The gate is in-process
+  (`PerTenantGate`), because open-source BullMQ has no tenant groups: running more than one worker
+  process multiplies the effective per-tenant limit, so scaling workers means moving that cap into
+  Redis first.
 - Dedupe: `UNIQUE (workflow_id, event_id)` means a re-delivered event cannot start a second run, and
   `processed_events` records what each consumer has already handled.
 - Approval timeouts escalate to another role. They never auto-approve a pay-affecting action.
@@ -258,10 +261,12 @@ service → bus → engine → command; run timeline in the UI is the human-read
 - **Unit** — policy guardrails, predicate evaluator, candidate ranking, pay maths.
 - **Contract** — every producer's emitted sample events validate against `@wfm/contracts`; the
   catalogue cannot drift from the schemas (one test walks the catalogue).
-- **Integration** — service API + outbox + backbone against real Postgres/Redis; approval resume
-  across a simulated process restart.
+- **Integration** — service API + outbox + backbone against real Postgres/Redis; duplicate delivery is
+  deduped at the router; a second engine instance resumes a run parked in Postgres, which is what
+  survives a process restart.
 - **End-to-end** — both demo scenarios: seed → event → run → approval → command → domain state
-  assertion, including a duplicate-event redelivery and an idempotent retry.
+  assertion, including a refused out-of-role approver, the rejection path, and an idempotent retry of
+  the same approval decision.
 
 ## 11. Production mapping (what changes, what doesn't)
 
@@ -278,8 +283,9 @@ service → bus → engine → command; run timeline in the UI is the human-read
 
 **A. Coverage rescue** (`shift.cancelled` with 8h to start, aged care RN shift)
 engine ranks candidates → cost delta exceeds the tenant threshold → manager approval → offers sent →
-employee accepts → `shift.assigned` → audit trail. Rejection path: run completes as
-`succeeded` with action `not_executed` and the reason recorded.
+employee accepts → `shift.assigned` → audit trail. Rejection path: the run ends with the `stopped_end`
+node's `needs_attention` outcome, no command is issued, and the decision plus its reason are on the
+timeline as an `approval_decided` event. Covered by an end-to-end test.
 
 **B. Payroll-safe timesheet exception** (`attendance.missed_break` + `timesheet.exception_raised`)
 engine fetches the timesheet and the award rule, computes unpaid-break and overtime impact →

@@ -44,15 +44,19 @@ async function call<T>(
   return { status: response.status, body: (text ? JSON.parse(text) : null) as T };
 }
 
-async function runFor(triggerEventType: string, startedAfter: number): Promise<RunSummary> {
+async function runIds(): Promise<Set<string>> {
+  const { body } = await call<RunSummary[]>(`${studioApi}/runs?limit=100`, { headers: headersFor('manager') });
+  return new Set(body.map((run) => run.runId));
+}
+
+/** The run this test started, never one an earlier test left behind. */
+async function runFor(triggerEventType: string, exclude: ReadonlySet<string>): Promise<RunSummary> {
   return waitFor<RunSummary>(
     async () => {
-      const { body } = await call<RunSummary[]>(`${studioApi}/runs`, { headers: headersFor('manager') });
-      return body.find(
-        (run) => run.triggerEventType === triggerEventType && Date.parse(run.startedAt) >= startedAfter - 2_000,
-      );
+      const { body } = await call<RunSummary[]>(`${studioApi}/runs?limit=100`, { headers: headersFor('manager') });
+      return body.find((run) => run.triggerEventType === triggerEventType && !exclude.has(run.runId));
     },
-    { description: `a run triggered by ${triggerEventType}`, timeoutMs: 30_000 },
+    { description: `a new run triggered by ${triggerEventType}`, timeoutMs: 30_000 },
   );
 }
 
@@ -71,7 +75,7 @@ describe('scenario A — coverage rescue', () => {
   let runId: string;
 
   test('a sick call starts a run that parks for a roster manager', async () => {
-    const startedAt = Date.now();
+    const before = await runIds();
     const simulated = await call<SimulatorResponse>(`${studioApi}/simulator/coverage_rescue`, {
       method: 'POST',
       headers: headersFor('manager'),
@@ -80,7 +84,7 @@ describe('scenario A — coverage rescue', () => {
     expect(simulated.body.emittedEvents).toContain('shift.cancelled');
     shiftId = simulated.body.shiftId!;
 
-    const run = await runFor('shift.cancelled', startedAt);
+    const run = await runFor('shift.cancelled', before);
     runId = run.runId;
     expect(run.workflowName).toContain('cancelled shift');
 
@@ -135,6 +139,48 @@ describe('scenario A — coverage rescue', () => {
     expect(offers.body.offers.length).toBeGreaterThan(0);
   }, 90000);
 
+  test('a rejection is recorded and no command is issued', async () => {
+    const before = await runIds();
+    const simulated = await call<SimulatorResponse>(`${studioApi}/simulator/coverage_rescue`, {
+      method: 'POST',
+      headers: headersFor('manager'),
+    });
+    expect(simulated.status).toBe(200);
+    const rejectedShiftId = simulated.body.shiftId!;
+    const offersBefore = await call<{ offers: unknown[] }>(`${rosteringApi}/shifts/${rejectedShiftId}/offers`, {
+      headers: headersFor('manager'),
+    });
+
+    const run = await runFor('shift.cancelled', before);
+    const parked = await runUntil(run.runId, 'awaiting_approval');
+
+    const decided = await call<{ runStatus: string }>(`${studioApi}/approvals/${parked.approval!.approvalId}/decision`, {
+      method: 'POST',
+      headers: headersFor('manager'),
+      body: { decision: 'reject', reason: 'Coverage found through the agency panel instead' },
+    });
+    expect(decided.status).toBe(200);
+
+    const finished = await waitFor<RunDetail>(
+      async () => {
+        const { body } = await call<RunDetail>(`${studioApi}/runs/${run.runId}`, { headers: headersFor('manager') });
+        return body.run.status === 'succeeded' ? body : null;
+      },
+      { description: 'the rejected run to finish', timeoutMs: 40_000 },
+    );
+
+    // The rejected path ends at the "needs attention" node, and nothing was written.
+    expect(finished.run.summary).toContain('Left for manual cover');
+    expect(finished.events.some((event) => event.kind === 'action_executed')).toBe(false);
+    const decision = finished.events.find((event) => event.kind === 'approval_decided');
+    expect(decision?.detail).toContain('agency panel');
+
+    const offersAfter = await call<{ offers: unknown[] }>(`${rosteringApi}/shifts/${rejectedShiftId}/offers`, {
+      headers: headersFor('manager'),
+    });
+    expect(offersAfter.body.offers.length).toBe(offersBefore.body.offers.length);
+  }, 90_000);
+
   test('a replayed decision cannot apply the action twice', async () => {
     const finished = await runUntil(runId, 'succeeded');
     const approvalId = finished.approval!.approvalId;
@@ -158,7 +204,7 @@ describe('scenario A — coverage rescue', () => {
 
 describe('scenario B — payroll-safe timesheet exception', () => {
   test('a missed break is drafted, approved by People Ops, and applied once', async () => {
-    const startedAt = Date.now();
+    const runsBefore = await runIds();
     const simulated = await call<SimulatorResponse>(`${studioApi}/simulator/payroll_exception`, {
       method: 'POST',
       headers: headersFor('manager'),
@@ -172,7 +218,7 @@ describe('scenario B — payroll-safe timesheet exception', () => {
     });
     expect(before.body.timesheet.exceptions.length).toBeGreaterThan(0);
 
-    const run = await runFor('timesheet.exception_raised', startedAt);
+    const run = await runFor('timesheet.exception_raised', runsBefore);
     const parked = await runUntil(run.runId, 'awaiting_approval');
     expect(parked.approval?.requestedFromRole).toBe('people_ops');
     expect(parked.approval?.proposal.payImpactCents).not.toBe(0);
