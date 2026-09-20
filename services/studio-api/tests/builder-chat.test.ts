@@ -16,9 +16,10 @@ import { builderRouteHandlers } from '../src/builder/index.ts';
 
 /**
  * The builder chat end to end, with the model faked at the provider boundary.
- * What the test is really holding is the contract the applier promises a model:
- * a good edit lands, a bad one is refused with a reason and changes nothing, and
- * an answer that cannot be read is a reply rather than a crash.
+ * The agent runs on the Deep Agents harness and changes the graph only through
+ * its tools, so what these tests hold is the contract that matters: the agent
+ * reads before it writes, a landed edit is applied by the applier, a refused one
+ * changes nothing and says why, and a turn that answers in prose touches no graph.
  */
 
 const TENANT = '11111111-1111-4111-8111-111111111111';
@@ -28,7 +29,9 @@ const OTHER_TENANT = '11111111-1111-4111-8111-000000000009';
 const WORKFLOW_EDIT = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000001';
 const WORKFLOW_THREAD = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000002';
 const WORKFLOW_REJECT = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000003';
-const WORKFLOW_GARBAGE = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000004';
+const WORKFLOW_PROSE = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000004';
+const WORKFLOW_FOCUS = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000005';
+const WORKFLOW_TOKENS = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000006';
 
 const MODEL = 'deepseek/deepseek-v4.1-flash';
 const INPUT_TOKENS = 1_200;
@@ -36,54 +39,66 @@ const OUTPUT_TOKENS = 340;
 
 const actor: ActorContext = { tenantId: TENANT, userId: 'demo', roles: ['roster_manager'] };
 
-/** What the fake model answers when it is asked to add a node and wire it in. */
-const ADD_ESCALATION = JSON.stringify({
-  reply: 'Added an Escalation note after the cover note and wired it to the end.',
-  operations: [
-    { op: 'disconnect', from: { node: 'cover_note', port: 'always' }, to: 'filled_end' },
+/** One model response in a scripted turn: prose, calls, or both. */
+interface Step {
+  content?: string;
+  toolCalls?: ReadonlyArray<{ id: string; name: string; arguments: string }>;
+}
+
+/** One response that calls tools: `calls(['c1', 'read_workflow', {}])`. */
+const calls = (...entries: ReadonlyArray<readonly [string, string, Record<string, unknown>]>): Step => ({
+  toolCalls: entries.map(([id, name, args]) => ({ id, name, arguments: JSON.stringify(args) })),
+});
+
+const says = (content: string): Step => ({ content });
+
+/** The calls a model makes to add a node and wire it in, in the order the tools require. */
+const ADD_ESCALATION: readonly Step[] = [
+  calls(['c1', 'read_workflow', {}]),
+  calls([
+    'c2',
+    'add_node',
     {
-      op: 'add_node',
       id: 'escalation_note',
       type: 'artifact',
       label: 'Escalation note',
-      config: {
-        name: 'Escalation note',
-        format: 'markdown',
-        body: '# Escalation\n\n{{run.workflowName}} needs attention.',
-      },
+      config: { name: 'Escalation note', format: 'markdown', body: '# Escalation\n\n{{run.workflowName}} needs attention.' },
     },
-    { op: 'connect', from: { node: 'cover_note', port: 'always' }, to: 'escalation_note' },
-    { op: 'connect', from: { node: 'escalation_note', port: 'always' }, to: 'filled_end' },
-  ],
-});
+  ]),
+  calls(['c3', 'disconnect', { from: 'cover_note', port: 'always', to: 'filled_end' }]),
+  calls(['c4', 'connect', { from: 'cover_note', port: 'always', to: 'escalation_note' }]),
+  calls(['c5', 'connect', { from: 'escalation_note', port: 'always', to: 'filled_end' }]),
+  says('Added an Escalation note after the cover note and wired it to the end.'),
+];
 
 /** An unknown node and a port the kind does not have: both guesses a model makes. */
-const BAD_OPERATIONS = JSON.stringify({
-  reply: 'Tried to rewire the cover note.',
-  operations: [
-    { op: 'connect', from: { node: 'cover_note', port: 'approved' }, to: 'filled_end' },
-    { op: 'update_node', id: 'no_such_node', label: 'Ghost' },
-  ],
-});
+const BAD_CALLS: readonly Step[] = [
+  calls(
+    ['c1', 'connect', { from: 'cover_note', port: 'approved', to: 'filled_end' }],
+    ['c2', 'update_node', { id: 'no_such_node', label: 'Ghost' }],
+  ),
+  says('Tried to rewire the cover note.'),
+];
 
-const NO_CHANGE = JSON.stringify({ reply: 'Left the graph as it is.', operations: [] });
-const GARBAGE = 'Sorry — here is a haiku: nodes drift like autumn leaves.';
-
-class CannedProvider extends LlmProvider {
+class ScriptedProvider extends LlmProvider {
   readonly kind: ProviderKind = 'platform';
   readonly model = MODEL;
   readonly requests: LlmRequest[] = [];
-  readonly #answer: string;
+  readonly #steps: Step[];
 
-  constructor(answer: string) {
+  constructor(steps: readonly Step[]) {
     super();
-    this.#answer = answer;
+    this.#steps = [...steps];
   }
 
   async complete(request: LlmRequest): Promise<LlmCompletion> {
     this.requests.push(request);
+    // A script that runs out answers in prose, which is how the harness is told
+    // the turn is over: tools called forever would loop forever.
+    const step = this.#steps.shift() ?? { content: 'Done.' };
     return {
-      content: this.#answer,
+      content: step.content ?? '',
+      ...(step.toolCalls === undefined ? {} : { toolCalls: step.toolCalls }),
       inputTokens: INPUT_TOKENS,
       outputTokens: OUTPUT_TOKENS,
       latencyMs: 12,
@@ -107,21 +122,18 @@ function requestOf(message: string): BuilderChatRequest {
 }
 
 const overrides: Array<string | undefined> = [];
-const providers: CannedProvider[] = [];
 
-function agentFor(...answers: readonly string[]): BuilderAgent {
-  let turn = 0;
-  return new BuilderAgent({
+function agentFor(steps: readonly Step[]): { agent: BuilderAgent; provider: ScriptedProvider } {
+  const provider = new ScriptedProvider(steps);
+  const agent = new BuilderAgent({
     db: studio.db,
     llm,
     providerFor: async (_tenantId, model) => {
       overrides.push(model);
-      // One answer per turn, the last one repeating if the test asks for more.
-      const provider = new CannedProvider(answers[turn++] ?? answers.at(-1) ?? '');
-      providers.push(provider);
       return provider;
     },
   });
+  return { agent, provider };
 }
 
 beforeAll(async () => {
@@ -140,14 +152,14 @@ afterAll(async () => {
 });
 
 describe('builder chat', () => {
-  test('applies the node the model asked for, wires it in, and reports the call', async () => {
-    const agent = agentFor(ADD_ESCALATION);
+  test('reads the graph through a tool, then applies the node it asked for and wires it in', async () => {
+    const { agent, provider } = agentFor(ADD_ESCALATION);
     const request = requestOf('add an artifact node called Escalation note after the cover note');
     const response = await agent.chat({ workflowId: WORKFLOW_EDIT, tenantId: TENANT, request });
 
     expect(response.applied).toEqual([
-      'disconnected cover_note --always--> filled_end',
       'added artifact "Escalation note" as escalation_note',
+      'disconnected cover_note --always--> filled_end',
       'connected cover_note --always--> escalation_note',
       'connected escalation_note --always--> filled_end',
     ]);
@@ -161,35 +173,87 @@ describe('builder chat', () => {
     expect(response.definition.edges).toContainEqual({ from: 'escalation_note', to: 'filled_end', port: 'always' });
     expect(response.definition.edges).not.toContainEqual({ from: 'cover_note', to: 'filled_end', port: 'always' });
     expect(response.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual([]);
-    // The node the model added lands somewhere the canvas can draw it.
     expect(response.layout.positions['escalation_note']).toBeDefined();
 
+    // The agent read before it wrote, and the tool's answer came back to the model
+    // as a tool turn carrying the graph, not as prose.
+    expect(response.steps[0]).toStartWith('read_workflow');
+    const afterRead = provider.requests[1]?.messages ?? [];
+    const toolTurn = afterRead.find((turn) => turn.role === 'tool');
+    expect(toolTurn?.name).toBe('read_workflow');
+    expect(toolTurn?.content).toContain('when_shift_cancelled');
+    expect(toolTurn?.toolCallId).toBe('c1');
+    expect(afterRead.at(-1)).toMatchObject({ role: 'tool' });
+    // The assistant turn that asked for the call is kept as a call, not as text.
+    const callTurn = afterRead.find((turn) => turn.role === 'assistant' && turn.toolCalls !== undefined);
+    expect(callTurn?.toolCalls?.[0]).toMatchObject({ id: 'c1', name: 'read_workflow' });
+    // The tools were declared to the provider, and the call that landed is told back.
+    expect(provider.requests[0]?.tools?.map((tool) => tool.name)).toContain('add_node');
+    const afterAdd = provider.requests[2]?.messages ?? [];
+    expect(afterAdd.filter((turn) => turn.role === 'tool').at(-1)?.content).toContain('recorded: add_node escalation_note');
+
     expect(response.model).toBe(MODEL);
-    expect(response.tokens).toEqual({
-      inputTokens: INPUT_TOKENS,
-      outputTokens: OUTPUT_TOKENS,
-      calls: 1,
-      estimatedCostCents: expect.closeTo(0.0384, 6),
-    });
-
-    const calls = await studio.sql<Array<{ run_id: string; node_id: string; model: string; input_tokens: number }>>`
-      select run_id, node_id, model, input_tokens from llm_calls where run_id = ${WORKFLOW_EDIT}`;
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ node_id: 'builder_chat', model: MODEL, input_tokens: INPUT_TOKENS });
-
-    // The turn carries the canvas's own graph, the paths a template can bind to
-    // for that trigger event, and the message the user just sent.
-    const prompt = providers.at(-1)?.requests.at(0);
-    expect(prompt?.user).toContain(JSON.stringify(request.definition));
-    expect(prompt?.user).toContain(JSON.stringify(request.layout.positions));
-    expect(prompt?.user).toContain('{{input.payload.shiftId}}');
-    expect(prompt?.user).toContain(`New message: ${request.message}`);
-    expect(prompt?.system).toContain('"op": "connect"');
     expect(overrides).toEqual([undefined]);
   });
 
+  test('sums the tokens of every call in the turn and files one row', async () => {
+    const { agent } = agentFor(ADD_ESCALATION);
+    const response = await agent.chat({
+      workflowId: WORKFLOW_TOKENS,
+      tenantId: TENANT,
+      request: requestOf('add an escalation note'),
+    });
+
+    // Six model responses, every one of them reporting usage.
+    expect(response.tokens.calls).toBe(6);
+    expect(response.tokens.inputTokens).toBe(INPUT_TOKENS * 6);
+    expect(response.tokens.outputTokens).toBe(OUTPUT_TOKENS * 6);
+
+    const rows = await studio.sql<Array<{ node_id: string; input_tokens: number; status: string }>>`
+      select node_id, input_tokens, status from llm_calls where run_id = ${WORKFLOW_TOKENS}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ node_id: 'builder_chat', input_tokens: INPUT_TOKENS * 6, status: 'ok' });
+  });
+
+  test('refuses an illegal port and an unknown node, and leaves the graph untouched', async () => {
+    const { agent } = agentFor(BAD_CALLS);
+    const request = requestOf('rewire the cover note through the approval port');
+    const response = await agent.chat({ workflowId: WORKFLOW_REJECT, tenantId: TENANT, request });
+
+    expect(response.applied).toEqual([]);
+    expect(response.rejected).toEqual([]);
+    expect(response.definition).toEqual(request.definition);
+    expect(response.layout).toEqual(request.layout);
+  });
+
+  test('answers in prose without touching the graph', async () => {
+    const { agent } = agentFor([says('A missed break is worth flagging because the award requires an unpaid rest.')]);
+    const request = requestOf('why does a missed break matter?');
+    const response = await agent.chat({ workflowId: WORKFLOW_PROSE, tenantId: TENANT, request });
+
+    expect(response.reply).toContain('award requires an unpaid rest');
+    expect(response.applied).toEqual([]);
+    expect(response.rejected).toEqual([]);
+    expect(response.definition).toEqual(request.definition);
+    expect(response.steps).toEqual([]);
+  });
+
+  test('reports what it pointed at, without changing the graph', async () => {
+    const { agent } = await agentFor([
+      calls(['c1', 'select_nodes', { ids: ['manager_approval'], reason: 'this is the step that waits' }]),
+      says('That one waits on the roster manager.'),
+    ]);
+    const request = requestOf('which step waits on a human?');
+    const response = await agent.chat({ workflowId: WORKFLOW_FOCUS, tenantId: TENANT, request });
+
+    expect(response.focus).toEqual({ nodeIds: ['manager_approval'], edgeIds: [] });
+    expect(response.applied).toEqual([]);
+    expect(response.definition).toEqual(request.definition);
+    expect(response.steps).toEqual(['select_nodes {"ids":["manager_approval"],"reason":"this is the step that waits"}']);
+  });
+
   test('persists both turns and reads the thread back oldest first', async () => {
-    const agent = agentFor(ADD_ESCALATION, NO_CHANGE);
+    const { agent } = agentFor([...ADD_ESCALATION, says('Left the graph as it is.')]);
     await agent.chat({
       workflowId: WORKFLOW_THREAD,
       tenantId: TENANT,
@@ -222,32 +286,5 @@ describe('builder chat', () => {
     const history = await builderRouteHandlers({ db: studio.db, llm }).history(actor, WORKFLOW_THREAD);
     expect(history.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
     expect(history.messages[1]?.messageId).toBe(turns[1]?.messageId);
-  });
-
-  test('refuses an unknown node and an illegal port, and leaves the graph untouched', async () => {
-    const agent = agentFor(BAD_OPERATIONS);
-    const request = requestOf('rewire the cover note through the approval port');
-    const response = await agent.chat({ workflowId: WORKFLOW_REJECT, tenantId: TENANT, request });
-
-    expect(response.applied).toEqual([]);
-    expect(response.rejected.map((rejection) => rejection.op)).toEqual(['connect', 'update_node']);
-    expect(response.rejected[0]?.reason).toContain('no "approved" port');
-    expect(response.rejected[0]?.reason).toContain('always');
-    expect(response.rejected[1]?.reason).toBe('no node "no_such_node"');
-
-    expect(response.definition).toEqual(request.definition);
-    expect(response.layout).toEqual(request.layout);
-  });
-
-  test('answers an unreadable model response with a reply and no graph change', async () => {
-    const agent = agentFor(GARBAGE);
-    const request = requestOf('add an escalation note');
-    const response = await agent.chat({ workflowId: WORKFLOW_GARBAGE, tenantId: TENANT, request });
-
-    expect(response.reply).toContain('could not read');
-    expect(response.applied).toEqual([]);
-    expect(response.rejected).toEqual([]);
-    expect(response.definition).toEqual(request.definition);
-    expect(response.tokens.calls).toBe(1);
   });
 });

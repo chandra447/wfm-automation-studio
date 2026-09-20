@@ -233,3 +233,12 @@ body {
 .react-flow__attribution {
   display: none;
 }
+
+/**
+ * The agent's selection: a soft ring on the card, distinct from the user's own
+ * selection (which is React Flow's `selected` class), so a turn can point at a
+ * node without stealing the inspector.
+ */
+.react-flow__node.wfm-focused > div {
+  box-shadow: 0 0 0 2px var(--color-node-ai), 0 0 24px -6px var(--color-node-ai);
+}

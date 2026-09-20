@@ -5,8 +5,10 @@
  *
  * It answers /v1/chat/completions with a payload that satisfies the engine's
  * proposal schemas, derived from the tool data embedded in the prompt, and it
- * records every request so a check can assert what the engine actually sent
- * (model, bearer key, message count) and what usage it reported.
+ * records every request, body and all, so a check can assert what the engine
+ * actually sent (model, bearer key, message count, tool declarations) and what
+ * usage it reported. A request that declares tools gets a tool call back for
+ * the first declared tool instead of prose, the way a vendor would answer.
  *
  * CLI:  bun run packages/testkit/src/fake-llm.ts --port 4599 --log /tmp/llm.jsonl
  * Probe: GET /_probe/requests, POST /_probe/reset
@@ -19,7 +21,9 @@ export interface FakeLlmRequest {
   authorization: string | null;
   messageCount: number;
   promptChars: number;
-  kind: 'candidate_choice' | 'timesheet_adjustment';
+  kind: 'candidate_choice' | 'timesheet_adjustment' | 'tool_call';
+  /** The request body exactly as it arrived, so a check can read tools and tool_choice. */
+  body: unknown;
   promptTokens: number;
   completionTokens: number;
 }
@@ -29,6 +33,11 @@ export interface FakeLlmOptions {
   logPath?: string;
   promptTokens?: number;
   completionTokens?: number;
+  /**
+   * The raw JSON string the fake returns as the arguments of the call it makes
+   * when a request declares tools. `{}` when unset.
+   */
+  toolCallArguments?: string;
 }
 
 export interface FakeLlmServer {
@@ -42,6 +51,14 @@ export interface FakeLlmServer {
 const chatRequestSchema = z.object({
   model: z.string().min(1),
   messages: z.array(z.object({ role: z.string(), content: z.string() })).min(1),
+  tools: z
+    .array(
+      z.object({
+        type: z.literal('function'),
+        function: z.object({ name: z.string().min(1), description: z.string().optional() }),
+      }),
+    )
+    .optional(),
 });
 
 const candidateListSchema = z.object({
@@ -137,7 +154,8 @@ export function startFakeLlmProvider(options: FakeLlmOptions = {}): FakeLlmServe
         );
       }
 
-      const parsed = chatRequestSchema.safeParse(await request.json().catch(() => null));
+      const rawBody: unknown = await request.json().catch(() => null);
+      const parsed = chatRequestSchema.safeParse(rawBody);
       if (!parsed.success) {
         return Response.json(
           { error: { message: 'invalid request body', type: 'invalid_request_error', code: 'invalid_request' } },
@@ -148,14 +166,16 @@ export function startFakeLlmProvider(options: FakeLlmOptions = {}): FakeLlmServe
       const prompt = parsed.data.messages.map((message) => message.content).join('\n');
       const toolData = toolDataOf(prompt);
       const isTimesheet = /timesheet/i.test(prompt);
-      const content = JSON.stringify(isTimesheet ? timesheetAdjustment(toolData) : candidateChoice(toolData));
+      // A declared tool is the model's cue to call it, so the fake calls the first one.
+      const declaredTool = parsed.data.tools?.at(0);
       const entry: FakeLlmRequest = {
         at: new Date().toISOString(),
         model: parsed.data.model,
         authorization,
         messageCount: parsed.data.messages.length,
         promptChars: prompt.length,
-        kind: isTimesheet ? 'timesheet_adjustment' : 'candidate_choice',
+        kind: declaredTool === undefined ? (isTimesheet ? 'timesheet_adjustment' : 'candidate_choice') : 'tool_call',
+        body: rawBody,
         promptTokens,
         completionTokens,
       };
@@ -164,12 +184,35 @@ export function startFakeLlmProvider(options: FakeLlmOptions = {}): FakeLlmServe
         await Bun.write(options.logPath, `${JSON.stringify(entry)}\n`, { createPath: true });
       }
 
+      const message =
+        declaredTool === undefined
+          ? {
+              role: 'assistant',
+              content: JSON.stringify(isTimesheet ? timesheetAdjustment(toolData) : candidateChoice(toolData)),
+            }
+          : {
+              role: 'assistant',
+              // The vendor sends null content when the model only calls.
+              content: null,
+              tool_calls: [
+                {
+                  id: `call_fake_${recorded.length}`,
+                  type: 'function',
+                  function: {
+                    name: declaredTool.function.name,
+                    arguments: options.toolCallArguments ?? '{}',
+                  },
+                },
+              ],
+            };
       return Response.json({
         id: `chatcmpl-fake-${recorded.length}`,
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
         model: parsed.data.model,
-        choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
+        choices: [
+          { index: 0, message, finish_reason: declaredTool === undefined ? 'stop' : 'tool_calls' },
+        ],
         usage: {
           prompt_tokens: promptTokens,
           completion_tokens: completionTokens,

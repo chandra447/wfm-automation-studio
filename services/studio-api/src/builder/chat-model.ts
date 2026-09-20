@@ -1,0 +1,250 @@
+import { BaseChatModel, type BaseChatModelCallOptions, type BindToolsInput } from '@langchain/core/language_models/chat_models';
+import {
+  AIMessage,
+  type BaseMessage,
+  type StandardMessageStructure,
+  ToolMessage,
+  type ToolCall,
+  type UsageMetadata,
+} from '@langchain/core/messages';
+import type { ChatResult } from '@langchain/core/outputs';
+import { isStructuredTool, type StructuredToolInterface } from '@langchain/core/tools';
+import { toJsonSchema } from '@langchain/core/utils/json_schema';
+import { z } from 'zod';
+import type { LlmCompletion, LlmProvider, LlmRequest, LlmToolSpec, LlmTurn } from '../llm/provider.ts';
+
+/**
+ * The LangChain face of our own provider boundary. Deep Agents drives its agent
+ * loop through `BaseChatModel`, and this is the only thing in between: a request
+ * becomes one `LlmRequest`, a completion becomes one `AIMessage`.
+ *
+ * Our provider speaks one system turn and one user turn, so the message list is
+ * flattened rather than mapped turn for turn. The flattening labels every
+ * segment, because the model has to be able to tell who said what and which
+ * tool call a result answers.
+ */
+
+/** Where a tool result is reported when LangChain left the tool unnamed. */
+const UNNAMED_TOOL = 'unknown tool';
+
+/**
+ * The shape `bindTools` may be handed beyond a LangChain tool: a declaration
+ * this module passes straight to the provider. `parameters` is JSON Schema and
+ * is not inspected here, so it is carried through as it arrived.
+ */
+const declaredToolSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().default(''),
+  parameters: z.unknown(),
+});
+
+/** Tool arguments are the model's raw JSON, which is allowed to be malformed. */
+const toolArgumentsSchema = z.record(z.string(), z.unknown());
+
+export interface BuilderChatModelFields {
+  provider: LlmProvider;
+  /**
+   * Declarations to offer the model from the first call on. `bindTools` adds
+   * more; an agent runtime normally binds rather than constructs with tools.
+   */
+  tools?: readonly (LlmToolSpec | StructuredToolInterface)[];
+  /** `none` forbids the call rather than merely not encouraging it. */
+  toolChoice?: 'auto' | 'none';
+}
+
+export class BuilderChatModel extends BaseChatModel {
+  readonly provider: LlmProvider;
+  /**
+   * Deliberately not named `tools`: LangChain's agent runtime reads a `tools`
+   * array on a model as tools bound outside `bindTools` and refuses to start,
+   * so the declarations live under a name the runtime does not police.
+   */
+  readonly toolSpecs: readonly LlmToolSpec[];
+  /** `none` only when a caller asked for it; the provider defaults to `auto`. */
+  readonly toolChoice: 'auto' | 'none';
+
+  constructor(fields: BuilderChatModelFields) {
+    super({});
+    this.provider = fields.provider;
+    this.toolSpecs = (fields.tools ?? []).map(toolSpecOf);
+    this.toolChoice = fields.toolChoice ?? 'auto';
+  }
+
+  override _llmType(): string {
+    return 'wfm-llm-provider';
+  }
+
+  /**
+   * Tools an agent runtime binds reach the provider as declarations. A fresh
+   * instance carries them, so the bound model is the one that talks to the
+   * vendor and nothing has to travel through run options.
+   */
+  override bindTools(
+    tools: BindToolsInput[],
+    kwargs?: Partial<BaseChatModelCallOptions>,
+  ): BuilderChatModel {
+    return new BuilderChatModel({
+      provider: this.provider,
+      tools: [...this.toolSpecs, ...tools.map(toolSpecOf)],
+      // Binding tools asks the model to choose among them; a caller that binds
+      // with `tool_choice: "none"` is the only one that says otherwise.
+      toolChoice: kwargs?.tool_choice === 'none' ? 'none' : 'auto',
+    });
+  }
+
+  override async _generate(
+    messages: BaseMessage[],
+    options: this['ParsedCallOptions'],
+  ): Promise<ChatResult> {
+    const completion = await this.provider.complete(
+      requestFor(messages, this.toolSpecs, this.toolChoice, options.tool_choice),
+    );
+    return {
+      generations: [
+        {
+          text: completion.content,
+          message: messageFor(completion, this.provider.kind),
+        },
+      ],
+    };
+  }
+}
+
+/**
+ * A LangChain tool declares its arguments as a Zod schema; ours are declared in
+ * JSON Schema. `toJsonSchema` covers both, and returns a schema it was handed
+ * unchanged, so a tool carrying JSON Schema already passes through untouched.
+ */
+function toolSpecOf(tool: BindToolsInput): LlmToolSpec {
+  if (isStructuredTool(tool)) {
+    return { name: tool.name, description: tool.description, parameters: toJsonSchema(tool.schema) };
+  }
+  const declared = declaredToolSchema.safeParse(tool);
+  if (!declared.success) {
+    throw new Error(
+      `a bound tool is neither a LangChain tool nor a {name, description, parameters} declaration: ${declared.error.message}`,
+    );
+  }
+  return { name: declared.data.name, description: declared.data.description, parameters: declared.data.parameters };
+}
+
+function requestFor(
+  messages: readonly BaseMessage[],
+  toolSpecs: readonly LlmToolSpec[],
+  boundChoice: 'auto' | 'none',
+  requestedChoice: BaseChatModelCallOptions['tool_choice'],
+): LlmRequest {
+  const { system, turns } = toConversation(messages);
+  const user = turns.length === 0 ? '' : turns.map((turn) => turn.content).join('\n\n');
+  const base: LlmRequest = { system, user, messages: turns };
+  if (toolSpecs.length === 0) return base;
+  return {
+    ...base,
+    tools: toolSpecs,
+    // Our provider knows two choices, so a caller asking for a specific tool is
+    // offered the same latitude as `auto` rather than a choice we cannot express.
+    toolChoice: requestedChoice === 'none' ? 'none' : boundChoice,
+  };
+}
+
+/**
+ * The conversation as our provider carries it: a system prompt and a list of
+ * turns that keeps each role, each tool call and each tool result where the
+ * protocol puts them. Flattening this into prose loses the structure the model
+ * uses to tell a tool result from something the user said, and a tool-using
+ * agent stops calling tools when it cannot see its own results.
+ */
+function toConversation(messages: readonly BaseMessage[]): { system: string; turns: LlmTurn[] } {
+  const system: string[] = [];
+  const turns: LlmTurn[] = [];
+  for (const message of messages) {
+    const text = message.text;
+    switch (message.getType()) {
+      case 'system':
+        system.push(text);
+        break;
+      case 'human':
+        turns.push({ role: 'user', content: text });
+        break;
+      case 'ai': {
+        const calls = toolCallsOf(message);
+        turns.push({
+          role: 'assistant',
+          content: text,
+          ...(calls.length === 0
+            ? {}
+            : {
+                toolCalls: calls.map((toolCall) => ({
+                  id: toolCall.id ?? '',
+                  name: toolCall.name,
+                  arguments: JSON.stringify(toolCall.args ?? {}),
+                })),
+              }),
+        });
+        break;
+      }
+      case 'tool':
+        turns.push({
+          role: 'tool',
+          content: text,
+          toolCallId: ToolMessage.isInstance(message) ? message.tool_call_id : '',
+          name: toolNameOf(message),
+        });
+        break;
+      default:
+        if (text.length > 0) turns.push({ role: 'user', content: text });
+    }
+  }
+  return {
+    system: system.filter((part) => part.length > 0).join('\n\n'),
+    turns,
+  };
+}
+
+function toolCallsOf(message: BaseMessage): readonly ToolCall[] {
+  return AIMessage.isInstance(message) ? message.tool_calls ?? [] : [];
+}
+
+/** The tool's name, or the call it answers when the runtime left the name off. */
+function toolNameOf(message: BaseMessage): string {
+  const name = message.name;
+  if (name !== undefined && name.length > 0) return name;
+  return ToolMessage.isInstance(message) ? message.tool_call_id : UNNAMED_TOOL;
+}
+
+/**
+ * The completion as LangChain sees it. Usage is the vendor's own report, so the
+ * harness prices the same tokens the provider was billed for.
+ */
+function messageFor(completion: LlmCompletion, providerKind: string): AIMessage {
+  const usage: UsageMetadata = {
+    input_tokens: completion.inputTokens,
+    output_tokens: completion.outputTokens,
+    total_tokens: completion.inputTokens + completion.outputTokens,
+  };
+  const toolCalls: ToolCall[] = (completion.toolCalls ?? []).map((call) => ({
+    id: call.id,
+    name: call.name,
+    args: parseArguments(call.arguments),
+  }));
+  return new AIMessage<StandardMessageStructure>({
+    content: completion.content,
+    tool_calls: toolCalls,
+    usage_metadata: usage,
+    response_metadata: { model_name: completion.model, model_provider: providerKind },
+  });
+}
+
+/**
+ * A model that emits malformed arguments has still asked for the tool, and the
+ * runtime's tool node reports the parse failure better than a thrown error here
+ * would, so the call survives with empty arguments.
+ */
+function parseArguments(raw: string): Record<string, unknown> {
+  try {
+    const parsed = toolArgumentsSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : {};
+  } catch {
+    return {};
+  }
+}

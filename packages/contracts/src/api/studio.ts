@@ -36,6 +36,12 @@ export const modelDescriptorSchema = z.object({
   contextWindow: z.int().positive(),
   maxOutputTokens: z.int().positive(),
   jsonMode: z.boolean(),
+  /**
+   * Whether the model is known to answer with tool calls. The builder agent
+   * runs on tools, so a model that does not is offered for reasoning and not
+   * for the chat, rather than failing halfway through a turn.
+   */
+  toolCalls: z.boolean(),
   inputCentsPerMillion: z.number().nonnegative(),
   outputCentsPerMillion: z.number().nonnegative(),
   default: z.boolean(),

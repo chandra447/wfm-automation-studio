@@ -8,11 +8,24 @@ import {
   AnthropicProvider,
   LlmProviderError,
   OpenAiCompatibleProvider,
+  type LlmToolSpec,
   type OpenAiCompatibleOptions,
 } from '../src/llm/provider.ts';
 
 const CATALOGUE_MODEL = 'deepseek/deepseek-v4.1-flash';
 const CUSTOMER_KEY = 'sk-customer-key-1234';
+
+/** The declaration a caller hands the provider, and the call the fake answers with. */
+const PICK_CANDIDATE_TOOL: LlmToolSpec = {
+  name: 'pick_candidate',
+  description: 'Pick the employee for the shift.',
+  parameters: {
+    type: 'object',
+    properties: { candidateId: { type: 'string' } },
+    required: ['candidateId'],
+  },
+};
+const PICK_CANDIDATE_ARGUMENTS = '{"candidateId":"44444444-4444-4444-8444-000000000003","reason":"rest rule"}';
 
 /** The model catalogue is the allow-list, so it is the file, not a code path. */
 describe('model catalogue', () => {
@@ -39,7 +52,7 @@ describe('model catalogue', () => {
     try {
       const complete =
         '{"id":"a","label":"A","provider":"openai-compatible","contextWindow":1000,' +
-        '"maxOutputTokens":100,"jsonMode":true,"inputCentsPerMillion":1,"outputCentsPerMillion":2,"default":true}';
+        '"maxOutputTokens":100,"jsonMode":true,"toolCalls":true,"inputCentsPerMillion":1,"outputCentsPerMillion":2,"default":true}';
       const unknownField = join(dir, 'unknown-field.jsonl');
       await Bun.write(unknownField, `${complete}\n{"id":"b","label":"B","provider":"openai-compatible"}\n`);
       await expect(loadModelCatalogue(unknownField)).rejects.toThrow(/unknown-field\.jsonl:2/);
@@ -58,7 +71,7 @@ describe('openai-compatible provider', () => {
   let fake: FakeLlmServer;
 
   beforeAll(() => {
-    fake = startFakeLlmProvider();
+    fake = startFakeLlmProvider({ toolCallArguments: PICK_CANDIDATE_ARGUMENTS });
   });
 
   afterAll(() => {
@@ -82,6 +95,8 @@ describe('openai-compatible provider', () => {
     expect(completion.model).toBe(CATALOGUE_MODEL);
     expect(completion.latencyMs).toBeGreaterThanOrEqual(0);
     expect(completion.content).toContain('employeeIds');
+    // No declarations were sent, so there is nothing for the model to call.
+    expect(completion.toolCalls).toBeUndefined();
 
     const [sent] = fake.requests();
     expect(sent).toBeDefined();
@@ -133,6 +148,82 @@ describe('openai-compatible provider', () => {
     if (!(unreachable instanceof LlmProviderError)) throw new Error('expected a provider error');
     expect(unreachable.permanent).toBe(false);
     expect(unreachable.status).toBeNull();
+  });
+
+  test('carries the tool declarations and asks for an automatic choice', async () => {
+    fake.reset();
+    const provider = new OpenAiCompatibleProvider({
+      kind: 'platform',
+      baseUrl: fake.url,
+      apiKey: CUSTOMER_KEY,
+      model: CATALOGUE_MODEL,
+      jsonMode: false,
+    });
+
+    const completion = await provider.complete({ system: 'Pick one.', user: 'u', tools: [PICK_CANDIDATE_TOOL] });
+
+    // The model only called, so there is no prose, and the arguments are still
+    // the vendor's string rather than a parsed object.
+    expect(completion.content).toBe('');
+    expect(completion.toolCalls).toEqual([
+      { id: 'call_fake_1', name: 'pick_candidate', arguments: PICK_CANDIDATE_ARGUMENTS },
+    ]);
+
+    const [sent] = fake.requests();
+    expect(sent?.kind).toBe('tool_call');
+    expect(sent?.body).toEqual({
+      model: CATALOGUE_MODEL,
+      messages: [
+        { role: 'system', content: 'Pick one.' },
+        { role: 'user', content: 'u' },
+      ],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'pick_candidate',
+            description: 'Pick the employee for the shift.',
+            parameters: {
+              type: 'object',
+              properties: { candidateId: { type: 'string' } },
+              required: ['candidateId'],
+            },
+          },
+        },
+      ],
+      tool_choice: 'auto',
+    });
+  });
+
+  test('a caller that forbids calls gets no declarations on the wire', async () => {
+    fake.reset();
+    const provider = new OpenAiCompatibleProvider({
+      kind: 'platform',
+      baseUrl: fake.url,
+      apiKey: CUSTOMER_KEY,
+      model: CATALOGUE_MODEL,
+      jsonMode: false,
+    });
+
+    const completion = await provider.complete({
+      system: 'Pick one.',
+      user: 'u',
+      tools: [PICK_CANDIDATE_TOOL],
+      toolChoice: 'none',
+    });
+
+    const [sent] = fake.requests();
+    // Nothing for the model to choose from, so it answers in prose as before.
+    expect(sent?.kind).toBe('candidate_choice');
+    expect(sent?.body).toEqual({
+      model: CATALOGUE_MODEL,
+      messages: [
+        { role: 'system', content: 'Pick one.' },
+        { role: 'user', content: 'u' },
+      ],
+    });
+    expect(completion.toolCalls).toBeUndefined();
+    expect(completion.content).toContain('employeeIds');
   });
 });
 
@@ -228,6 +319,121 @@ describe('provider wire format', () => {
           model: 'claude-sonnet',
           max_tokens: 4096,
           system: 'Reply in JSON.\n\nRespond with JSON matching: {"ok":boolean}',
+          messages: [{ role: 'user', content: 'u' }],
+        },
+      ]);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('carries tool declarations and reads a tool_use block back', async () => {
+    const server = startCaptureServer(() => ({
+      content: [
+        // A block this layer does not act on must not fail the parse.
+        { type: 'thinking', thinking: 'weighing the candidates' },
+        { type: 'text', text: 'Picking the closest candidate.' },
+        {
+          type: 'tool_use',
+          id: 'toolu_01',
+          name: 'pick_candidate',
+          input: { candidateId: '44444444-4444-4444-8444-000000000003', reason: 'rest rule' },
+        },
+      ],
+      usage: { input_tokens: 21, output_tokens: 9 },
+    }));
+    try {
+      const provider = new AnthropicProvider({
+        baseUrl: `${server.url}/v1`,
+        apiKey: 'sk-anthropic-key',
+        model: 'claude-sonnet',
+      });
+      const completion = await provider.complete({ system: 'Pick one.', user: 'u', tools: [PICK_CANDIDATE_TOOL] });
+
+      expect(completion.content).toBe('Picking the closest candidate.');
+      // The block's `input` object is re-serialised, so the caller still owns parsing it.
+      expect(completion.toolCalls).toEqual([
+        { id: 'toolu_01', name: 'pick_candidate', arguments: PICK_CANDIDATE_ARGUMENTS },
+      ]);
+      expect(server.captured.map((entry) => entry.path)).toEqual(['/v1/messages']);
+      expect(server.captured.map((entry) => entry.body)).toEqual([
+        {
+          model: 'claude-sonnet',
+          max_tokens: 4096,
+          system: 'Pick one.',
+          messages: [{ role: 'user', content: 'u' }],
+          tools: [
+            {
+              name: 'pick_candidate',
+              description: 'Pick the employee for the shift.',
+              input_schema: {
+                type: 'object',
+                properties: { candidateId: { type: 'string' } },
+                required: ['candidateId'],
+              },
+            },
+          ],
+          tool_choice: { type: 'auto' },
+        },
+      ]);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('a response with only a tool_use block is a call, not an error', async () => {
+    const server = startCaptureServer(() => ({
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_02',
+          name: 'pick_candidate',
+          input: { candidateId: '44444444-4444-4444-8444-000000000003' },
+        },
+      ],
+      usage: { input_tokens: 7, output_tokens: 4 },
+    }));
+    try {
+      const provider = new AnthropicProvider({
+        baseUrl: `${server.url}/v1`,
+        apiKey: 'sk-anthropic-key',
+        model: 'claude-sonnet',
+      });
+      const completion = await provider.complete({ system: 'Pick one.', user: 'u', tools: [PICK_CANDIDATE_TOOL] });
+
+      expect(completion.content).toBe('');
+      expect(completion.toolCalls).toEqual([
+        { id: 'toolu_02', name: 'pick_candidate', arguments: '{"candidateId":"44444444-4444-4444-8444-000000000003"}' },
+      ]);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test('an Anthropic caller that forbids calls gets no declarations on the wire', async () => {
+    const server = startCaptureServer(() => ({
+      content: [{ type: 'text', text: '{"ok":true}' }],
+      usage: { input_tokens: 3, output_tokens: 2 },
+    }));
+    try {
+      const provider = new AnthropicProvider({
+        baseUrl: `${server.url}/v1`,
+        apiKey: 'sk-anthropic-key',
+        model: 'claude-sonnet',
+      });
+      const completion = await provider.complete({
+        system: 'Pick one.',
+        user: 'u',
+        tools: [PICK_CANDIDATE_TOOL],
+        toolChoice: 'none',
+      });
+
+      expect(completion.toolCalls).toBeUndefined();
+      expect(server.captured.map((entry) => entry.body)).toEqual([
+        {
+          model: 'claude-sonnet',
+          max_tokens: 4096,
+          system: 'Pick one.',
           messages: [{ role: 'user', content: 'u' }],
         },
       ]);

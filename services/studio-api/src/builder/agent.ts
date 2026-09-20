@@ -1,60 +1,37 @@
+import type { BaseMessage } from '@langchain/core/messages';
+import { AIMessage, HumanMessage } from '@langchain/core/messages';
+import { createDeepAgent } from 'deepagents';
 import { z } from 'zod';
-import { triggerCatalog, type ModelDescriptor, type TokenUsage } from '@wfm/contracts';
-import {
-  applyOperations,
-  builderOperationSchema,
-  commandCatalog,
-  defaultNodeOf,
-  fieldsOf,
-  isNode,
-  kindFor,
-  legalPortsByNodeType,
-  nodePalette,
-  toolCatalog,
-  type BuilderChatMessage,
-  type BuilderChatRequest,
-  type BuilderChatResponse,
-  type BuilderOperation,
-  type ControlSource,
-  type FieldSpec,
-  type OperationOutcome,
-} from '@wfm/workflows';
-import { buildDataCatalogue } from '../engine/data-catalogue.ts';
+import type { ModelDescriptor, TokenUsage } from '@wfm/contracts';
+import type { BuilderChatMessage, BuilderChatResponse, BuilderChatRequest } from '@wfm/workflows';
+import { applyOperations, validateWorkflow } from '@wfm/workflows';
+import { createLogger } from '@wfm/observability';
 import type { LlmServices } from '../llm/index.ts';
-import type { LlmCompletion, LlmProvider } from '../llm/provider.ts';
+import type { LlmProvider } from '../llm/provider.ts';
+import { BuilderChatModel } from './chat-model.ts';
+import { kindLines } from './catalogue.ts';
 import { BuilderMessageStore, type BuilderDb } from './store.ts';
+import { builderTools, type BuilderToolContext } from './tools.ts';
 
 /**
- * The builder's agent. It reads the graph the canvas is showing, asks the
- * tenant's model for a reply and a list of operations, and hands that list to
- * the applier in @wfm/workflows. The model proposes; the applier decides what a
- * graph may become, so nothing here can write a definition the DSL rejects.
+ * The builder's agent, running on the Deep Agents harness: the model is given
+ * tools and decides for itself what to read, what to point at, and what to
+ * change. It cannot change the graph directly — the write tools collect
+ * operations and the applier in @wfm/workflows judges the list — so an agent
+ * with tools still cannot produce a definition the DSL rejects.
  *
- * The definition in the request is the whole state of the conversation. The
- * canvas is the system of record, so a turn reasons about what is on the screen
- * right now, including nodes the user dragged by hand.
+ * The turn is stateless with respect to the harness. The conversation lives in
+ * `builder_messages` and the recent turns are handed over in the prompt, so
+ * there is one record of what was said rather than a checkpointer's copy and
+ * ours drifting apart.
  */
 
 const PROMPT_TURNS = 12;
 const TOKENS_PER_PRICE_UNIT = 1_000_000;
+const STEP_ARGUMENT_LIMIT = 120;
 
 /** Where a builder call is filed in the accounting table: no run exists, so the workflow stands in. */
 const BUILDER_NODE_ID = 'builder_chat';
-
-const UNREADABLE_REPLY = "I could not read the model's answer, so the graph is unchanged.";
-
-/** The operation list, mirroring the six shapes builderOperationSchema accepts. */
-const OPERATION_LINES: readonly string[] = [
-  '{ "op": "add_node", "id": string, "type": <kind>, "label"?: string, "config"?: object, "position"?: { "x": number, "y": number } }',
-  '{ "op": "update_node", "id": string, "label"?: string, "config"?: object }',
-  '{ "op": "remove_node", "id": string }',
-  '{ "op": "move_node", "id": string, "position": { "x": number, "y": number } }',
-  '{ "op": "connect", "from": { "node": string, "port": <port> }, "to": string }',
-  '{ "op": "disconnect", "from": { "node": string, "port": <port> }, "to": string }',
-];
-
-/** The id a kind's defaults are read under; it never reaches a prompt. */
-const CATALOGUE_PLACEHOLDER_ID = 'example';
 
 export interface BuilderAgentDeps {
   db: BuilderDb;
@@ -73,14 +50,11 @@ export class BuilderAgent {
   readonly #store: BuilderMessageStore;
   readonly #llm: LlmServices;
   readonly #providerFor: BuilderAgentDeps['providerFor'];
-  /** Built once: the palette and the contract do not change between turns. */
-  readonly #system: string;
 
   constructor(deps: BuilderAgentDeps) {
     this.#store = new BuilderMessageStore(deps.db);
     this.#llm = deps.llm;
     this.#providerFor = deps.providerFor;
-    this.#system = systemPrompt(deps.llm.catalogue.models());
   }
 
   async chat(input: BuilderChatInput): Promise<BuilderChatResponse> {
@@ -102,21 +76,35 @@ export class BuilderAgent {
       rejected: [],
     });
 
-    const completion = await this.#complete(provider, { tenantId, workflowId }, {
-      system: this.#system,
-      user: userContent(request, history),
+    const context = buildContext(request, this.#llm);
+    const agent = createDeepAgent({
+      model: new BuilderChatModel({ provider }),
+      tools: builderTools(context),
+      systemPrompt: systemPrompt(this.#llm.catalogue.models()),
     });
 
-    const answer = readAnswer(completion.content);
-    const outcome = applyOperations(request.definition, request.layout, answer?.operations ?? []);
-    const reply = replyFor(answer, outcome);
+    const started = Date.now();
+    let messages: BaseMessage[];
+    try {
+      const result = await agent.invoke({ messages: [new HumanMessage(userContent(request, history))] });
+      messages = result.messages;
+    } catch (error) {
+      await this.#record(provider, { tenantId, workflowId }, undefined, 'error');
+      throw error;
+    }
+
+    const usage = usageOf(messages, provider, Date.now() - started);
+    await this.#record(provider, { tenantId, workflowId }, usage, 'ok');
+
+    const outcome = applyOperations(request.definition, request.layout, context.proposed);
+    const reply = replyFor(messages, outcome.applied.length, outcome.rejected.length);
 
     await this.#store.appendTurn({
       workflowId,
       tenantId,
       role: 'assistant',
       content: reply,
-      model: completion.model,
+      model: provider.model,
       applied: outcome.applied,
       rejected: outcome.rejected,
     });
@@ -128,32 +116,18 @@ export class BuilderAgent {
       applied: outcome.applied,
       rejected: outcome.rejected,
       diagnostics: outcome.diagnostics,
-      model: completion.model,
-      tokens: usageOf(completion, this.#llm.catalogue.modelById(completion.model)),
+      focus: context.focus,
+      steps: stepsOf(messages),
+      model: provider.model,
+      tokens: usageOfTokens(usage, this.#llm.catalogue.modelById(provider.model)),
     };
   }
 
   /** A failed turn is recorded as well as a successful one: the spend is real either way. */
-  async #complete(
-    provider: LlmProvider,
-    where: { tenantId: string; workflowId: string },
-    prompt: { system: string; user: string },
-  ): Promise<LlmCompletion> {
-    let completion: LlmCompletion;
-    try {
-      completion = await provider.complete(prompt);
-    } catch (error) {
-      await this.#record(provider, where, undefined, 'error');
-      throw error;
-    }
-    await this.#record(provider, where, completion, 'ok');
-    return completion;
-  }
-
   async #record(
     provider: LlmProvider,
     where: { tenantId: string; workflowId: string },
-    completion: LlmCompletion | undefined,
+    usage: TurnUsage | undefined,
     status: 'ok' | 'error',
   ): Promise<void> {
     await this.#llm.accounting.recordCall({
@@ -161,181 +135,62 @@ export class BuilderAgent {
       runId: where.workflowId,
       nodeId: BUILDER_NODE_ID,
       providerKind: provider.kind,
-      model: completion?.model ?? provider.model,
-      inputTokens: completion?.inputTokens ?? 0,
-      outputTokens: completion?.outputTokens ?? 0,
-      latencyMs: completion?.latencyMs ?? 0,
+      model: provider.model,
+      inputTokens: usage?.inputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
+      latencyMs: usage?.latencyMs ?? 0,
       status,
     });
   }
 }
 
-interface ModelAnswer {
-  reply: string;
-  operations: BuilderOperation[];
-}
-
-const modelAnswerSchema = z.object({
-  reply: z.string().default(''),
-  operations: z.array(builderOperationSchema).default([]),
-});
+const logger = createLogger('builder-agent');
 
 /**
- * A model that wrapped its JSON in prose or fences is still usable, so the
- * outermost object is taken out of whatever it sent. An answer that is not an
- * object at all is a turn with no edit rather than an error: the caller gets a
- * reply that says so and the graph it already had.
+ * The graph the tools read and the list they write to. The definition comes
+ * from the canvas rather than from the draft, because the user may have dragged
+ * or edited something the autosave has not sent yet.
  */
-function readAnswer(content: string): ModelAnswer | null {
-  const trimmed = content.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-  const start = trimmed.indexOf('{');
-  const end = trimmed.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-
-  let body: unknown;
-  try {
-    body = JSON.parse(trimmed.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-  const parsed = modelAnswerSchema.safeParse(body);
-  return parsed.success ? parsed.data : null;
-}
-
-/** The model's own words, or a plain account of what happened when it sent none. */
-function replyFor(answer: ModelAnswer | null, outcome: OperationOutcome): string {
-  if (answer === null) return UNREADABLE_REPLY;
-  if (answer.reply.trim() !== '') return answer.reply;
-  if (outcome.applied.length === 0 && outcome.rejected.length === 0) return 'I made no change to the graph.';
-  return `Applied ${outcome.applied.length} change(s) and refused ${outcome.rejected.length}.`;
-}
-
-/**
- * This turn's own call. The accounting row feeds the tenant and workflow totals;
- * the response reports the call the user just paid for, priced from the same
- * catalogue and by the same formula.
- */
-function usageOf(completion: LlmCompletion, price: ModelDescriptor | undefined): TokenUsage {
-  const cents =
-    price === undefined
-      ? 0
-      : (completion.inputTokens * price.inputCentsPerMillion +
-          completion.outputTokens * price.outputCentsPerMillion) /
-        TOKENS_PER_PRICE_UNIT;
+function buildContext(request: BuilderChatRequest, llm: LlmServices): BuilderToolContext {
+  const trigger = request.definition.nodes.find((node) => node.type === 'trigger');
   return {
-    inputTokens: completion.inputTokens,
-    outputTokens: completion.outputTokens,
-    calls: 1,
-    estimatedCostCents: Math.round(cents * 1e6) / 1e6,
+    definition: request.definition,
+    layout: request.layout,
+    eventType: request.eventType ?? (trigger?.type === 'trigger' ? trigger.config.eventType : undefined),
+    models: llm.catalogue.models(),
+    diagnostics: validateWorkflow(request.definition),
+    proposed: [],
+    focus: { nodeIds: [], edgeIds: [] },
   };
 }
 
 function systemPrompt(models: readonly ModelDescriptor[]): string {
   return [
-    'You are the workflow builder inside the WFM Automation Studio. You change the workflow graph the user is looking at by proposing a short list of operations. The platform applies them, validates the result, and reports what it refused, so propose only changes you would defend.',
+    'You are the workflow builder inside the WFM Automation Studio. You change the workflow graph the user is looking at by calling the tools you have been given. The platform applies what you propose, validates the result, and tells you what it refused.',
     '',
-    'Rules you cannot break:',
-    '- The graph must still be valid after your edit: exactly one trigger node, and every path must still reach an end node.',
-    '- A node you add must be wired into the graph in the same turn, or the whole edit is dropped.',
-    '- Use only the node kinds, config keys and ports listed below. An unknown key or an illegal port is refused, with the list of what the kind accepts.',
-    '- Positions belong to the user. Move a node only when the message asks you to.',
+    'How to work:',
+    '- Read before you write. Call read_workflow to see what is on the canvas, and get_node when you need one node in full.',
+    '- Before adding or reconfiguring a node, call list_node_kinds for its ports and the config keys it accepts, so you propose values the platform takes.',
+    '- Before writing any {{...}} template, call read_data_catalogue so the path exists at save time.',
+    '- The graph must be valid when you finish: exactly one trigger node, and every path reaching an end node. A node you add must be wired in the same turn. The write tools tell you when the graph is not valid yet; keep working until they stop saying so.',
+    '- Positions belong to the user. Call move_node only when they ask you to move something.',
+    '- Call select_nodes and select_edges to point at what you are talking about. It changes nothing; it is how the user sees which step you mean.',
     '- Prefer updating an existing node over adding a near-duplicate of it.',
-    '- If the message is a question, or asks for something these operations cannot express, answer it in `reply` and return no operations.',
+    '- If the message is a question, or asks for something these tools cannot express, answer it and change nothing.',
     '',
-    'Node kinds:',
-    ...kindLines(models),
+    'When you are done, reply in one or two sentences: what you changed and why. No markdown, no code fences, no JSON.',
     '',
-    'Answer with one JSON object and nothing else:',
-    '{ "reply": string, "operations": Operation[] }',
-    '`reply` is one or two sentences to the user: what you changed and why. No markdown, no code fences.',
-    'Each operation is exactly one of:',
-    ...OPERATION_LINES,
-    'Return an empty operations list when nothing should change.',
+    'Kinds available to you, for reference. list_node_kinds reports the same thing with the current values:',
+    kindLines(models).join('\n'),
   ].join('\n');
 }
 
 /**
- * The palette as prose, derived from the same declarations the canvas reads, so
- * a kind added tomorrow teaches the agent about it with no prompt edit. The
- * values a config key accepts come from the kind's own schema, and the option
- * lists that live in the platform's catalogues are resolved alongside it.
+ * What the agent is handed: the thread so far and the new message. The graph is
+ * not pasted in, because reading it is the agent's first tool call and the tools
+ * answer with what is on the canvas right now.
  */
-function kindLines(models: readonly ModelDescriptor[]): string[] {
-  const sources: Partial<Record<ControlSource, readonly string[]>> = {
-    triggerEvents: triggerCatalog().map((trigger) => trigger.eventType),
-    // A command's input fields are the config the model must write for it, so the
-    // id is offered together with the fields the chosen command requires.
-    commands: commandCatalog.map(
-      (command) => `${command.id} (input fields: ${command.inputs.map((input) => input.field).join(', ')})`,
-    ),
-    tools: toolCatalog.map((tool) => tool.id),
-    models: models.map((model) => model.id),
-  };
-  return nodePalette.flatMap((entry) => {
-    const shape: z.ZodRawShape = kindFor(entry.type).schema.shape;
-    const defaults = defaultNodeOf(entry.type, CATALOGUE_PLACEHOLDER_ID).config;
-    return [
-      `- ${entry.type} — "${entry.label}": ${entry.description}`,
-      `  ports: ${legalPortsByNodeType[entry.type].join(', ') || 'none (terminal)'}`,
-      '  config keys:',
-      ...fieldsOf(entry.type).map((field) => {
-        const declared = shape[field.key];
-        // A key wrapped in `.optional()` or `.default()` may be left out, and the
-        // applier merges what is left with the kind's own defaults.
-        const optional = declared instanceof z.ZodOptional || declared instanceof z.ZodDefault;
-        const template = field.template === true ? ', {{...}} allowed' : '';
-        const allowed = allowedValuesFor(shape, field, sources);
-        const values = allowed.length === 0 ? '' : ` — one of: ${allowed.join(', ')}`;
-        return `    ${field.key} (${field.control.kind}, ${optional ? 'optional' : 'required'}${template}): ${field.label}${values}`;
-      }),
-      `  default config: ${JSON.stringify(defaults)}`,
-    ];
-  });
-}
-
-/**
- * The values a config key accepts: the kind's own enum when the key has one,
- * otherwise the catalogue its control names. The applier refuses anything else,
- * so the model is told exactly what will be taken.
- */
-function allowedValuesFor(
-  shape: z.ZodRawShape,
-  field: FieldSpec,
-  sources: Partial<Record<ControlSource, readonly string[]>>,
-): readonly string[] {
-  const declared = enumValuesOf(shape, field.key);
-  if (declared.length > 0) return declared;
-  if (field.control.kind !== 'select' && field.control.kind !== 'checklist') return [];
-  const { options, optionsFrom } = field.control;
-  if (options !== undefined) return options.map((option) => option.value);
-  return optionsFrom === undefined ? [] : (sources[optionsFrom] ?? []);
-}
-
-/** An enum config key's legal values, unwrapped from the array or default around it. */
-function enumValuesOf(shape: z.ZodRawShape, key: string): readonly string[] {
-  let declared = shape[key];
-  while (declared instanceof z.ZodArray || declared instanceof z.ZodOptional || declared instanceof z.ZodDefault) {
-    declared = declared.unwrap();
-  }
-  return declared instanceof z.ZodEnum
-    ? declared.options.filter((value): value is string => typeof value === 'string')
-    : [];
-}
-
 function userContent(request: BuilderChatRequest, history: readonly BuilderChatMessage[]): string {
-  const trigger = request.definition.nodes.find((node) => isNode(node, 'trigger'));
-  const eventType = request.eventType ?? trigger?.config.eventType;
-  // The paths a template may name, one line each, grouped by the root they hang off.
-  const fields =
-    eventType === undefined
-      ? []
-      : buildDataCatalogue(eventType).roots.flatMap((root) => [
-          `${root.label}:`,
-          ...root.paths.map(
-            (path) =>
-              `  {{${path.path}}}: ${path.label} (${path.type})${path.sample === '' ? '' : `, e.g. ${path.sample}`}`,
-          ),
-        ]);
   const thread = history.map((turn) => {
     const changes = [
       ...turn.applied,
@@ -347,16 +202,82 @@ function userContent(request: BuilderChatRequest, history: readonly BuilderChatM
   });
 
   return [
-    'The graph on the canvas now:',
-    JSON.stringify(request.definition),
+    `Workflow: ${request.definition.name}`,
+    ...(thread.length === 0 ? [] : ['', 'The thread so far:', ...thread]),
     '',
-    'Where the canvas has placed its nodes:',
-    JSON.stringify(request.layout.positions),
-    '',
-    `Trigger event: ${eventType ?? 'none set'}`,
-    ...(fields.length === 0 ? [] : ['', 'Fields a template can bind to, as {{...}}:', ...fields]),
-    '',
-    ...(thread.length === 0 ? [] : ['The thread so far:', ...thread, '']),
     `New message: ${request.message}`,
   ].join('\n');
+}
+
+/** The tools the agent called, in order, as the transcript shows them. */
+function stepsOf(messages: readonly BaseMessage[]): string[] {
+  const steps: string[] = [];
+  for (const message of messages) {
+    if (!(message instanceof AIMessage)) continue;
+    for (const call of message.tool_calls ?? []) {
+      const args = JSON.stringify(call.args ?? {});
+      steps.push(`${call.name} ${args.length > STEP_ARGUMENT_LIMIT ? `${args.slice(0, STEP_ARGUMENT_LIMIT)}…` : args}`);
+    }
+  }
+  return steps;
+}
+
+/** The agent's last words, or an account of the turn when it produced none. */
+function replyFor(messages: readonly BaseMessage[], appliedCount: number, refusedCount: number): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!(message instanceof AIMessage)) continue;
+    const text = typeof message.content === 'string' ? message.content : '';
+    if (text.trim() !== '') return text.trim();
+  }
+  if (appliedCount === 0 && refusedCount === 0) return 'I made no change to the graph.';
+  return `Applied ${appliedCount} change(s) and refused ${refusedCount}.`;
+}
+
+interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  calls: number;
+  latencyMs: number;
+}
+
+/**
+ * A tool-using turn is several model calls, so the turn's tokens are the sum of
+ * its messages' own usage reports rather than one call's. The report arrives
+ * from the vendor through the harness, so it is parsed rather than assumed.
+ */
+function usageOf(messages: readonly BaseMessage[], provider: LlmProvider, latencyMs: number): TurnUsage {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let calls = 0;
+  for (const message of messages) {
+    if (!(message instanceof AIMessage)) continue;
+    const parsed = usageMetadataSchema.safeParse(message.usage_metadata);
+    if (!parsed.success) continue;
+    inputTokens += parsed.data.input_tokens;
+    outputTokens += parsed.data.output_tokens;
+    calls += 1;
+  }
+  if (calls === 0) logger.warn({ model: provider.model }, 'a builder turn reported no token usage');
+  return { inputTokens, outputTokens, calls, latencyMs };
+}
+
+const usageMetadataSchema = z.object({
+  input_tokens: z.number().nonnegative(),
+  output_tokens: z.number().nonnegative(),
+});
+
+/** The turn's spend, priced from the same catalogue every other view reads. */
+function usageOfTokens(usage: TurnUsage, price: ModelDescriptor | undefined): TokenUsage {
+  const cents =
+    price === undefined
+      ? 0
+      : (usage.inputTokens * price.inputCentsPerMillion + usage.outputTokens * price.outputCentsPerMillion) /
+        TOKENS_PER_PRICE_UNIT;
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    calls: usage.calls,
+    estimatedCostCents: Math.round(cents * 1e6) / 1e6,
+  };
 }

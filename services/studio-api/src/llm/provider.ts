@@ -10,11 +10,56 @@ import type { LlmProviderKind } from '@wfm/contracts';
 /** `none` means "no provider at all", so it is never a provider's own kind. */
 export type ProviderKind = Exclude<LlmProviderKind, 'none'>;
 
+/**
+ * One callable the model may ask for, in JSON Schema. The caller owns what the
+ * call means: a provider only carries the declaration and the model's request
+ * to make it.
+ */
+export interface LlmToolSpec {
+  name: string;
+  description: string;
+  /** JSON Schema for the arguments, as both protocols expect it. */
+  parameters: unknown;
+}
+
+/** What the model asked to call, with its arguments still unparsed. */
+export interface LlmToolCall {
+  id: string;
+  name: string;
+  /** The vendor's raw JSON string; the caller validates it against the tool. */
+  arguments: string;
+}
+
+/**
+ * One turn of a conversation in the shape both protocols carry. A caller with a
+ * conversation to continue sets `messages`; a caller with a single prompt sets
+ * `user`, and the provider sends it as one user turn.
+ */
+export interface LlmTurn {
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  /** Assistant turns: what it asked to call, so the results can be matched back. */
+  toolCalls?: readonly LlmToolCall[];
+  /** Tool turns: which call this answers. */
+  toolCallId?: string;
+  name?: string;
+}
+
 export interface LlmRequest {
   system: string;
   user: string;
+  /**
+   * The conversation so far, when there is one. A tool-using agent needs this:
+   * a tool result flattened into prose loses the structure the model uses to
+   * tell a result from something the user said, and it stops calling tools.
+   */
+  messages?: readonly LlmTurn[];
   /** The JSON the caller expects back, appended to the system message. */
   jsonSchemaHint?: string;
+  /** Declarations the model may choose from; absent means a plain completion. */
+  tools?: readonly LlmToolSpec[];
+  /** `auto` lets the model answer or call; `none` forbids calls. */
+  toolChoice?: 'auto' | 'none';
 }
 
 export interface LlmCompletion {
@@ -23,6 +68,8 @@ export interface LlmCompletion {
   outputTokens: number;
   latencyMs: number;
   model: string;
+  /** Present when the model chose to call rather than answer. */
+  toolCalls?: readonly LlmToolCall[];
 }
 
 /**
@@ -154,8 +201,99 @@ function systemPrompt(request: LlmRequest): string {
   return hint === undefined ? request.system : `${request.system}\n\nRespond with JSON matching: ${hint}`;
 }
 
+/**
+ * The declarations to put on the wire, or none when there is nothing to choose
+ * from or the caller forbade calls. Both transports answer to the same rule, so
+ * `none` means the same thing on each.
+ */
+function declaredTools(request: LlmRequest): readonly LlmToolSpec[] | undefined {
+  const tools = request.tools;
+  if (tools === undefined || tools.length === 0 || request.toolChoice === 'none') return undefined;
+  return tools;
+}
+
+/**
+ * The conversation in the shape `/chat/completions` takes. A caller with no
+ * conversation gets its single prompt as one user turn, so the two callers that
+ * exist (a proposal over one event, and an agent over a thread) share one path.
+ */
+function openAiTurns(request: LlmRequest): unknown[] {
+  if (request.messages === undefined) return [{ role: 'user', content: request.user }];
+  return request.messages.map((turn) => {
+    if (turn.role === 'tool') return { role: 'tool', tool_call_id: turn.toolCallId, content: turn.content };
+    if (turn.role === 'assistant' && turn.toolCalls !== undefined && turn.toolCalls.length > 0) {
+      return {
+        role: 'assistant',
+        content: turn.content === '' ? null : turn.content,
+        tool_calls: turn.toolCalls.map((call) => ({
+          id: call.id,
+          type: 'function',
+          function: { name: call.name, arguments: call.arguments },
+        })),
+      };
+    }
+    return { role: turn.role, content: turn.content };
+  });
+}
+
+/**
+ * The same conversation in the shape the Messages API takes, where a tool
+ * result is a user turn carrying a `tool_result` block rather than a role of
+ * its own.
+ */
+function anthropicTurns(request: LlmRequest): unknown[] {
+  if (request.messages === undefined) return [{ role: 'user', content: request.user }];
+  return request.messages.map((turn) => {
+    if (turn.role === 'tool') {
+      return {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: turn.toolCallId, content: turn.content }],
+      };
+    }
+    if (turn.role === 'assistant' && turn.toolCalls !== undefined && turn.toolCalls.length > 0) {
+      return {
+        role: 'assistant',
+        content: [
+          ...(turn.content === '' ? [] : [{ type: 'text', text: turn.content }]),
+          ...turn.toolCalls.map((call) => ({
+            type: 'tool_use',
+            id: call.id,
+            name: call.name,
+            input: parseToolArguments(call.arguments),
+          })),
+        ],
+      };
+    }
+    return { role: turn.role, content: turn.content };
+  });
+}
+
+/** Anthropic takes the arguments as an object, so a malformed string is sent as an empty one. */
+function parseToolArguments(arguments_: string): unknown {
+  try {
+    return JSON.parse(arguments_);
+  } catch {
+    return {};
+  }
+}
+
+const chatCompletionToolCallSchema = z.object({
+  id: z.string(),
+  function: z.object({ name: z.string(), arguments: z.string() }),
+});
+
 const chatCompletionSchema = z.object({
-  choices: z.array(z.object({ message: z.object({ content: z.string() }) })).min(1),
+  choices: z
+    .array(
+      z.object({
+        message: z.object({
+          // A model that only calls returns no prose, and the vendor says so with null.
+          content: z.string().nullish(),
+          tool_calls: z.array(chatCompletionToolCallSchema).optional(),
+        }),
+      }),
+    )
+    .min(1),
   usage: z.object({ prompt_tokens: z.int().nonnegative(), completion_tokens: z.int().nonnegative() }),
 });
 
@@ -194,6 +332,7 @@ export class OpenAiCompatibleProvider extends LlmProvider {
 
   async complete(request: LlmRequest): Promise<LlmCompletion> {
     const label = `${this.kind} provider`;
+    const tools = declaredTools(request);
     const response = await postJson({
       url: `${this.#baseUrl}/chat/completions`,
       headers: { authorization: `Bearer ${this.#apiKey}` },
@@ -203,27 +342,63 @@ export class OpenAiCompatibleProvider extends LlmProvider {
         model: this.model,
         messages: [
           { role: 'system', content: systemPrompt(request) },
-          { role: 'user', content: request.user },
+          ...openAiTurns(request),
         ],
-        ...(this.#jsonMode ? { response_format: { type: 'json_object' } } : {}),
+        // JSON mode asks for one JSON object as the message content, which is
+        // exactly what a caller with tools does not want: the model cannot both
+        // be constrained to an object and choose to call something, and it
+        // answers with JSON shaped like a call instead of making one.
+        ...(this.#jsonMode && tools === undefined ? { response_format: { type: 'json_object' } } : {}),
+        ...(tools === undefined
+          ? {}
+          : {
+              tools: tools.map((tool) => ({
+                type: 'function',
+                function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+              })),
+              tool_choice: 'auto',
+            }),
       },
     });
     if (response.status !== 200) throw failure(label, response);
     const body = decode(chatCompletionSchema, response, label);
     const choice = body.choices.at(0);
     if (choice === undefined) throw failure(label, response);
+    const calls = choice.message.tool_calls;
     return {
-      content: choice.message.content,
+      content: choice.message.content ?? '',
       inputTokens: body.usage.prompt_tokens,
       outputTokens: body.usage.completion_tokens,
       latencyMs: response.latencyMs,
       model: this.model,
+      ...(calls === undefined || calls.length === 0
+        ? {}
+        : {
+            toolCalls: calls.map((call) => ({
+              id: call.id,
+              name: call.function.name,
+              arguments: call.function.arguments,
+            })),
+          }),
     };
   }
 }
 
+/**
+ * Anthropic sends block types this layer does not act on (`thinking`, for one),
+ * so the schema tags rather than narrows: the two blocks that matter are picked
+ * out by tag and anything else is carried along and ignored.
+ */
+const anthropicContentBlockSchema = z.object({
+  type: z.string(),
+  text: z.string().optional(),
+  id: z.string().optional(),
+  name: z.string().optional(),
+  input: z.unknown().optional(),
+});
+
 const anthropicMessageSchema = z.object({
-  content: z.array(z.object({ type: z.string(), text: z.string().optional() })).min(1),
+  content: z.array(anthropicContentBlockSchema).min(1),
   usage: z.object({ input_tokens: z.int().nonnegative(), output_tokens: z.int().nonnegative() }),
 });
 
@@ -255,6 +430,7 @@ export class AnthropicProvider extends LlmProvider {
 
   async complete(request: LlmRequest): Promise<LlmCompletion> {
     const label = 'anthropic provider';
+    const tools = declaredTools(request);
     const response = await postJson({
       url: `${this.#baseUrl}/messages`,
       headers: { 'x-api-key': this.#apiKey, 'anthropic-version': ANTHROPIC_VERSION },
@@ -264,21 +440,41 @@ export class AnthropicProvider extends LlmProvider {
         model: this.model,
         max_tokens: this.#maxTokens,
         system: systemPrompt(request),
-        messages: [{ role: 'user', content: request.user }],
+        messages: anthropicTurns(request),
+        ...(tools === undefined
+          ? {}
+          : {
+              tools: tools.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                input_schema: tool.parameters,
+              })),
+              tool_choice: { type: 'auto' },
+            }),
       },
     });
     if (response.status !== 200) throw failure(label, response);
     const body = decode(anthropicMessageSchema, response, label);
-    const text = body.content.find((block) => block.type === 'text' && block.text !== undefined)?.text;
-    if (text === undefined) {
-      throw new LlmProviderError(`${label} returned no text block`, { permanent: false, status: response.status });
+    const textBlocks = body.content.filter((block) => block.type === 'text');
+    const toolCalls = body.content.flatMap((block) =>
+      block.type === 'tool_use' && block.id !== undefined && block.name !== undefined && block.input !== undefined
+        ? [{ id: block.id, name: block.name, arguments: JSON.stringify(block.input) }]
+        : [],
+    );
+    // A response that carries neither prose nor a call leaves the caller nothing to act on.
+    if (textBlocks.length === 0 && toolCalls.length === 0) {
+      throw new LlmProviderError(`${label} returned no text or tool_use block`, {
+        permanent: false,
+        status: response.status,
+      });
     }
     return {
-      content: text,
+      content: textBlocks.map((block) => block.text ?? '').join(''),
       inputTokens: body.usage.input_tokens,
       outputTokens: body.usage.output_tokens,
       latencyMs: response.latencyMs,
       model: this.model,
+      ...(toolCalls.length === 0 ? {} : { toolCalls }),
     };
   }
 }

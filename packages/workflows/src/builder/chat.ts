@@ -53,6 +53,13 @@ export const builderChatMessageSchema = z.object({
 
 export const builderChatHistorySchema = z.object({ messages: z.array(builderChatMessageSchema) });
 
+export const builderFocusSchema = z.object({
+  /** Nodes the agent asked the canvas to point at. */
+  nodeIds: z.array(z.string()),
+  /** Edges, as `from::port::to`, the agent asked the canvas to point at. */
+  edgeIds: z.array(z.string()),
+});
+
 export const builderChatResponseSchema = z.object({
   reply: z.string(),
   definition: workflowDefinitionSchema,
@@ -60,11 +67,16 @@ export const builderChatResponseSchema = z.object({
   applied: z.array(z.string()),
   rejected: z.array(builderRejectionSchema),
   diagnostics: z.array(diagnosticSchema),
+  /** What the agent asked the canvas to highlight, from its selection tools. */
+  focus: builderFocusSchema,
+  /** The tools the agent called this turn, in order, for the transcript. */
+  steps: z.array(z.string()),
   model: z.string().nullable(),
   tokens: tokenUsageSchema,
 });
 
 export type CanvasLayoutPayload = z.infer<typeof canvasLayoutSchema>;
+export type BuilderFocus = z.infer<typeof builderFocusSchema>;
 export type BuilderChatRequest = z.infer<typeof builderChatRequestSchema>;
 export type BuilderChatResponse = z.infer<typeof builderChatResponseSchema>;
 export type BuilderChatMessage = z.infer<typeof builderChatMessageSchema>;

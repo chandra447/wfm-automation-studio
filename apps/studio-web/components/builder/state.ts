@@ -25,6 +25,8 @@ export interface BuilderSnapshot {
 export interface BuilderNodeData extends Record<string, unknown> {
   node: WorkflowNode;
   diagnostics: Diagnostic[];
+  /** True while the agent is pointing at this node. */
+  focused?: boolean;
 }
 
 export type BuilderFlowNode = Node<BuilderNodeData, 'wfm'>;
@@ -84,13 +86,15 @@ export function toFlowNodes(
   grouped: Record<string, Diagnostic[]>,
   selectedId: string | null,
   cache: FlowNodeCache = createFlowNodeCache(),
+  focusedIds: readonly string[] = [],
 ): BuilderFlowNode[] {
   const nodes: BuilderFlowNode[] = [];
   for (const node of definition.nodes) {
     const position = layout.positions[node.id] ?? { x: 0, y: 0 };
     const nodeDiagnostics = grouped[node.id] ?? [];
     const selected = node.id === selectedId;
-    const signature = JSON.stringify([node, position, nodeDiagnostics, selected]);
+    const focused = focusedIds.includes(node.id);
+    const signature = JSON.stringify([node, position, nodeDiagnostics, selected, focused]);
     const cached = cache.entries[node.id];
     if (cached !== undefined && cached.signature === signature) {
       nodes.push(cached.node);
@@ -101,7 +105,8 @@ export function toFlowNodes(
       type: NODE_TYPE,
       position,
       selected,
-      data: { node, diagnostics: nodeDiagnostics },
+      ...(focused ? { className: 'wfm-focused' } : {}),
+      data: { node, diagnostics: nodeDiagnostics, focused },
     };
     cache.entries[node.id] = { signature, node: built };
     nodes.push(built);
