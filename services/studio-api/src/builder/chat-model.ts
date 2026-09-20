@@ -38,11 +38,34 @@ const declaredToolSchema = z.object({
   parameters: z.unknown(),
 });
 
+/**
+ * LangChain's structured-output strategy binds a tool in the vendor's own
+ * shape rather than wrapping it, so the declaration arrives nested under
+ * `function` with a `type` discriminant.
+ */
+const functionToolSchema = z.object({
+  type: z.literal('function'),
+  function: z.object({
+    name: z.string().min(1),
+    description: z.string().default(''),
+    parameters: z.unknown(),
+  }),
+});
+
 /** Tool arguments are the model's raw JSON, which is allowed to be malformed. */
 const toolArgumentsSchema = z.record(z.string(), z.unknown());
 
+/** Tokens and call counts the vendor reported, summed over a model's life. */
+export interface ModelUsage {
+  inputTokens: number;
+  outputTokens: number;
+  calls: number;
+}
+
 export interface BuilderChatModelFields {
   provider: LlmProvider;
+  /** Shared with the copies `bindTools` makes, so a caller can read the total. */
+  usage?: ModelUsage;
   /**
    * Declarations to offer the model from the first call on. `bindTools` adds
    * more; an agent runtime normally binds rather than constructs with tools.
@@ -63,9 +86,17 @@ export class BuilderChatModel extends BaseChatModel {
   /** `none` only when a caller asked for it; the provider defaults to `auto`. */
   readonly toolChoice: 'auto' | 'none';
 
+  /**
+   * What the vendor reported for every call this instance has made. Shared by
+   * reference: `bindTools` returns a copy, and an agent runtime calls the copy,
+   * so a caller watching this object has to be watching the one that talks.
+   */
+  readonly usage: ModelUsage;
+
   constructor(fields: BuilderChatModelFields) {
     super({});
     this.provider = fields.provider;
+    this.usage = fields.usage ?? { inputTokens: 0, outputTokens: 0, calls: 0 };
     this.toolSpecs = (fields.tools ?? []).map(toolSpecOf);
     this.toolChoice = fields.toolChoice ?? 'auto';
   }
@@ -85,6 +116,7 @@ export class BuilderChatModel extends BaseChatModel {
   ): BuilderChatModel {
     return new BuilderChatModel({
       provider: this.provider,
+      usage: this.usage,
       tools: [...this.toolSpecs, ...tools.map(toolSpecOf)],
       // Binding tools asks the model to choose among them; a caller that binds
       // with `tool_choice: "none"` is the only one that says otherwise.
@@ -99,6 +131,12 @@ export class BuilderChatModel extends BaseChatModel {
     const completion = await this.provider.complete(
       requestFor(messages, this.toolSpecs, this.toolChoice, options.tool_choice),
     );
+    // A caller that runs a loop needs to know what the loop spent even when it
+    // ends badly, and an exception carries no messages out of the graph. The
+    // model is the one object that sees every vendor call.
+    this.usage.inputTokens += completion.inputTokens;
+    this.usage.outputTokens += completion.outputTokens;
+    this.usage.calls += 1;
     return {
       generations: [
         {
@@ -120,12 +158,21 @@ function toolSpecOf(tool: BindToolsInput): LlmToolSpec {
     return { name: tool.name, description: tool.description, parameters: toJsonSchema(tool.schema) };
   }
   const declared = declaredToolSchema.safeParse(tool);
-  if (!declared.success) {
+  if (declared.success) {
+    return { name: declared.data.name, description: declared.data.description, parameters: declared.data.parameters };
+  }
+  const fn = functionToolSchema.safeParse(tool);
+  if (!fn.success) {
     throw new Error(
-      `a bound tool is neither a LangChain tool nor a {name, description, parameters} declaration: ${declared.error.message}`,
+      `a bound tool is neither a LangChain tool, a {name, description, parameters} declaration, nor a ` +
+        `{type: 'function', function: {name, description, parameters}} declaration: ${fn.error.message}`,
     );
   }
-  return { name: declared.data.name, description: declared.data.description, parameters: declared.data.parameters };
+  return {
+    name: fn.data.function.name,
+    description: fn.data.function.description,
+    parameters: fn.data.function.parameters,
+  };
 }
 
 function requestFor(

@@ -90,6 +90,32 @@ describe('builder chat model', () => {
     expect(reply.tool_calls).toEqual([{ id: 'call_2', name: 'add_shift', args: {} }]);
   });
 
+  test('a vendor-shaped function declaration binds without throwing', async () => {
+    const provider = new StubProvider([answer({ content: 'Done.' })]);
+    // The shape LangChain's structured-output strategy binds: the vendor's own
+    // function definition, not a wrapper tool.
+    const bound = new BuilderChatModel({ provider }).bindTools([
+      {
+        type: 'function',
+        function: {
+          name: 'extract_1',
+          description: 'Tool for extracting structured output from the model’s response.',
+          parameters: { type: 'object', properties: { rationale: { type: 'string' } } },
+        },
+      },
+    ]);
+
+    await bound.invoke([new HumanMessage('Answer with the structured output.')]);
+
+    expect(provider.requests[0]?.tools).toEqual([
+      {
+        name: 'extract_1',
+        description: 'Tool for extracting structured output from the model’s response.',
+        parameters: { type: 'object', properties: { rationale: { type: 'string' } } },
+      },
+    ]);
+  });
+
   test('the request carries the bound declarations and the whole exchange in order', async () => {
     const provider = new StubProvider([answer({ content: 'Done.' })]);
     const model = new BuilderChatModel({ provider, tools: [ADD_SHIFT] });

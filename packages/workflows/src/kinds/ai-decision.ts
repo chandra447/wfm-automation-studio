@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import type { Diagnostic } from '../diagnostics.ts';
+import { aiOutputSchema } from '../primitives.ts';
 import { defineKind } from './define.ts';
 
-const aiOutputSchema = z.enum(['candidate_choice', 'timesheet_adjustment', 'coverage_plan']);
 
 export const aiDecisionKind = defineKind(
   'ai_decision',
@@ -22,7 +22,6 @@ export const aiDecisionKind = defineKind(
       label: 'AI decision',
       description: 'Reasons over read-only tools and produces a proposal it must justify with evidence.',
       accent: 'violet',
-      icon: '✦',
     },
     defaultLabel: 'AI decision',
     defaultConfig: {

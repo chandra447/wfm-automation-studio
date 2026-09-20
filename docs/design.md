@@ -235,7 +235,33 @@ be called with the union node type, because the parameter types intersect to `ne
 keeps one uniform executor signature in a table keyed by node type, and each executor narrows with a
 type predicate.
 
-### 7.2.2 References, single-sourced
+### 7.2.2 Two AI nodes, on purpose
+
+`ai_decision` and `agent` declare the same read-only tools and return the same structured output.
+They differ in who decides what to read, and therefore in what a run costs.
+
+| | `ai_decision` | `agent` |
+|---|---|---|
+| Who chooses the reads | the node's config, resolved at save time | the model, from the tools the node declared |
+| Model calls per run | one, plus one retry if the reply fails schema validation | one per step, up to `maxSteps` |
+| What the model sees | the evidence the engine fetched for it | what it asked for, plus the trail of what it asked |
+| Cost derivable from the definition | yes | no, it depends on the model's choices |
+
+Both exist because both are honest answers to different problems. A workflow that moves pay and gets
+audited wants the first: the same event on the same version produces the same prompt and a cost the
+customer can predict. A case where a later read depends on what an earlier read returned wants the
+second, and the trail it leaves is what makes it reviewable.
+
+Making the loop the only behaviour would have changed the cost contract of every workflow already
+saved, silently. Making it a second kind keeps the choice visible in the definition, where a reviewer
+can see which nodes are predictable and which are not.
+
+An agent node needs a provider. There is no deterministic equivalent of a loop, so a tenant with no
+model configured fails that node's run with a message naming it, rather than quietly substituting the
+rules proposer the way `ai_decision` does. A tool call is a read: the node's declared tools are the
+whole allow-list, and the validator refuses a tool the platform does not have at save time.
+
+### 7.2.3 References, single-sourced
 
 A config string may read the run's own data:
 
@@ -254,7 +280,7 @@ value rather than its string form, which is what lets an action pass an array of
 The canvas lists the available paths with sample values and inserts them at the caret of the focused
 template field, so an author does not have to remember a path.
 
-### 7.2.3 Artifacts
+### 7.2.4 Artifacts
 
 A run can render a document from its own data and attach it. The `artifact` kind declares its body as
 a template slot and inherits parsing, resolution, and save-time checking from the reference

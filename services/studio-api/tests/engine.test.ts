@@ -88,6 +88,7 @@ describe('studio engine', () => {
           stop: async () => {},
         },
         proposer: harness.proposer,
+        agent: null,
         logger: { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} } as never,
       },
       new MemorySaver(),

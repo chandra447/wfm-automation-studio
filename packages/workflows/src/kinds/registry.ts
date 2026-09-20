@@ -6,6 +6,7 @@ import { aiDecisionKind } from './ai-decision.ts';
 import { artifactKind } from './artifact.ts';
 import { conditionKind } from './condition.ts';
 import { endKind } from './end.ts';
+import { agentKind } from './agent.ts';
 import { humanApprovalKind } from './human-approval.ts';
 import { policyCheckKind } from './policy-check.ts';
 import { triggerKind } from './trigger.ts';
@@ -27,6 +28,7 @@ export const NODE_TYPE_ORDER = [
   'trigger',
   'condition',
   'ai_decision',
+  'agent',
   'policy_check',
   'human_approval',
   'action',
@@ -38,6 +40,7 @@ export const nodeKinds = {
   trigger: triggerKind,
   condition: conditionKind,
   ai_decision: aiDecisionKind,
+  agent: agentKind,
   policy_check: policyCheckKind,
   human_approval: humanApprovalKind,
   action: actionKind,
@@ -55,6 +58,7 @@ export const workflowNodeSchema = z.discriminatedUnion('type', [
   nodeKinds.trigger.nodeSchema,
   nodeKinds.condition.nodeSchema,
   nodeKinds.ai_decision.nodeSchema,
+  nodeKinds.agent.nodeSchema,
   nodeKinds.policy_check.nodeSchema,
   nodeKinds.human_approval.nodeSchema,
   nodeKinds.action.nodeSchema,
@@ -103,6 +107,7 @@ export const legalPortsByNodeType = {
   trigger: nodeKinds.trigger.ports,
   condition: nodeKinds.condition.ports,
   ai_decision: nodeKinds.ai_decision.ports,
+  agent: nodeKinds.agent.ports,
   policy_check: nodeKinds.policy_check.ports,
   human_approval: nodeKinds.human_approval.ports,
   action: nodeKinds.action.ports,
@@ -110,10 +115,11 @@ export const legalPortsByNodeType = {
   end: nodeKinds.end.ports,
 } satisfies Record<WorkflowNodeType, readonly EdgePort[]>;
 
-export const nodePalette: ReadonlyArray<{ type: WorkflowNodeType; label: string; description: string; accent: string; icon: string }> = [
+export const nodePalette: ReadonlyArray<{ type: WorkflowNodeType; label: string; description: string; accent: string }> = [
   { type: 'trigger', ...nodeKinds.trigger.palette },
   { type: 'condition', ...nodeKinds.condition.palette },
   { type: 'ai_decision', ...nodeKinds.ai_decision.palette },
+  { type: 'agent', ...nodeKinds.agent.palette },
   { type: 'policy_check', ...nodeKinds.policy_check.palette },
   { type: 'human_approval', ...nodeKinds.human_approval.palette },
   { type: 'action', ...nodeKinds.action.palette },

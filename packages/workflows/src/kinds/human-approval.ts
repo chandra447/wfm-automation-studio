@@ -1,7 +1,7 @@
 import { z } from 'zod';
+import { approvalDisplaySchema } from '../primitives.ts';
 import { defineKind } from './define.ts';
 
-const approvalDisplaySchema = z.enum(['rationale', 'evidence', 'payImpact', 'candidateComparison']);
 
 export const humanApprovalKind = defineKind(
   'human_approval',
@@ -33,7 +33,6 @@ export const humanApprovalKind = defineKind(
       label: 'Human approval',
       description: 'Pauses the run, asks a role to decide, resumes on their answer or escalates.',
       accent: 'rose',
-      icon: '👤',
     },
     defaultLabel: 'Human approval',
     defaultConfig: { role: 'roster_manager', timeoutMinutes: 240, escalateTo: 'operations_lead', show: ['rationale', 'evidence'] },

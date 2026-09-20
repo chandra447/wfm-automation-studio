@@ -111,7 +111,14 @@ async function fireScenario(scenario: string): Promise<string | null> {
  * A reasoning model can spend a minute or more on one proposal, so this waits
  * far longer than the engine's own model timeout before giving up.
  */
-async function waitForStatus(runId: string, wanted: readonly string[], tries = 400): Promise<Record<string, unknown> | null> {
+/**
+ * The budget covers a slow vendor, not a slow engine: a model call on a large
+ * prompt has taken 59s here, and the proposer retries once, so a single node can
+ * spend two minutes before the graph moves on. The waits are generous on
+ * purpose, because a verification that fails when the vendor is having a bad
+ * afternoon is a verification nobody trusts.
+ */
+async function waitForStatus(runId: string, wanted: readonly string[], tries = 900): Promise<Record<string, unknown> | null> {
   for (let attempt = 0; attempt < tries; attempt += 1) {
     const detail = await call(`/runs/${runId}`);
     const run = asRecord(asRecord(detail.body)['run']);
@@ -574,6 +581,115 @@ async function checkBuilderChat(): Promise<void> {
   }
 }
 
+/* 14. the agent node runs a loop against the real provider */
+const PAYROLL_WORKFLOW = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000002';
+
+/**
+ * The strongest claim about the agent node is that it is interchangeable with
+ * an AI decision: same declared tools, same structured output, same gates. So
+ * this takes the payroll workflow, swaps its single-shot decision for an agent,
+ * publishes it, fires the real scenario, and reads back what the loop did.
+ */
+async function checkAgentNode(): Promise<void> {
+  await call('/provider-settings', { method: 'PUT', body: { kind: 'platform', model: FAST_MODEL } });
+  const created = await call('/workflows', {
+    method: 'POST',
+    body: { name: `Agent node check ${Date.now()}`, fromWorkflowId: PAYROLL_WORKFLOW },
+  });
+  const workflowId = String(asRecord(created.body)['workflowId'] ?? '');
+  if (created.status >= 400 || workflowId === '') {
+    record('agent: a loop node runs the payroll workflow and proposes', false, `POST /workflows returned ${created.status}`);
+    return;
+  }
+
+  try {
+    const detail = asRecord((await call(`/workflows/${workflowId}`)).body);
+    const version =
+      asArray(detail['versions']).map(asRecord).find((candidate) => candidate['status'] === 'draft') ??
+      asArray(detail['versions']).map(asRecord).at(-1);
+    const definition = asRecord(version?.['definition']);
+    const nodes = asArray(definition['nodes'])
+      .map(asRecord)
+      .map((node) =>
+        node['type'] === 'ai_decision'
+          ? {
+              ...node,
+              type: 'agent',
+              label: 'Investigate the exception',
+              config: { ...asRecord(node['config']), maxSteps: 4 },
+            }
+          : node,
+      );
+
+    const saved = await call(`/workflows/${workflowId}/draft`, {
+      method: 'PUT',
+      body: {
+        name: String(definition['name'] ?? 'Agent node check'),
+        definition: { ...definition, nodes },
+        layout: version?.['layout'] ?? {},
+      },
+    });
+    const published = await call(`/workflows/${workflowId}/publish`, { method: 'POST' });
+    if (saved.status >= 400 || published.status >= 400) {
+      record(
+        'agent: a loop node runs the payroll workflow and proposes',
+        false,
+        `PUT draft=${saved.status} publish=${published.status} ${JSON.stringify(published.body).slice(0, 200)}`,
+      );
+      return;
+    }
+
+    const before = await call('/runs?limit=100');
+    const known = new Set(asArray(before.body).map((run) => String(asRecord(run)['runId'])));
+    const fired = await call('/simulator/payroll_exception', { method: 'POST', body: {} });
+    if (fired.status >= 400) {
+      record('agent: a loop node runs the payroll workflow and proposes', false, `simulator returned ${fired.status}`);
+      return;
+    }
+
+    let runId: string | null = null;
+    for (let attempt = 0; attempt < 60 && runId === null; attempt += 1) {
+      await Bun.sleep(500);
+      const runs = asArray((await call('/runs?limit=100')).body).map(asRecord);
+      const mine = runs.find((run) => !known.has(String(run['runId'])) && String(run['workflowId']) === workflowId);
+      if (mine !== undefined) runId = String(mine['runId']);
+    }
+    if (runId === null) {
+      record('agent: a loop node runs the payroll workflow and proposes', false, 'no run for the agent workflow');
+      return;
+    }
+
+    const finished = (await waitForStatus(runId, ['awaiting_approval', 'succeeded'], 400)) ?? {};
+    const events = asArray(finished['events']).map(asRecord);
+    const proposal = events.find((event) => event['kind'] === 'proposal_created' && event['nodeId'] === 'draft_adjustment');
+    const data = asRecord(proposal?.['data']);
+    const trail = asArray(data['toolTrail']).map(String);
+    const declared = new Set(['timesheet.get', 'award_rule.get']);
+
+    const sql = new SQL(STUDIO_DB, { max: 1 });
+    const rows = await sql<Array<{ calls: number; input: number }>>`
+      select count(*)::int as calls, coalesce(sum(input_tokens), 0)::int as input
+      from llm_calls where run_id = ${runId} and node_id = 'draft_adjustment'
+    `;
+    await sql.close();
+    const accounting = rows[0];
+
+    const status = String(asRecord(finished['run'])['status']);
+    record(
+      'agent: a loop node runs the payroll workflow and proposes',
+      status === 'awaiting_approval' &&
+        data['proposer'] === 'agent' &&
+        trail.length > 0 &&
+        trail.every((tool) => declared.has(tool)) &&
+        accounting?.calls === 1 &&
+        (accounting?.input ?? 0) > 0,
+      `status=${status} toolTrail=[${trail.join(', ')}] llm_calls rows=${accounting?.calls ?? 0} inputTokens=${accounting?.input ?? 0}`,
+    );
+  } finally {
+    await call(`/workflows/${workflowId}`, { method: 'DELETE' });
+  }
+}
+
 /* leave the demo configured the way a reviewer will find it */
 async function restorePlatformProvider(): Promise<void> {
   const restored = await call('/provider-settings', { method: 'PUT', body: { kind: 'platform', model: CATALOGUE_MODEL } });
@@ -598,7 +714,8 @@ const steps: Array<[string, () => Promise<void>]> = [
   ['11. Domain outcome', checkDomainOutcome],
   ['12. Steering from an approval', checkSteering],
   ['13. Conversational builder', checkBuilderChat],
-  ['14. Leave the demo on the platform provider', restorePlatformProvider],
+  ['14. Agent node', checkAgentNode],
+  ['15. Leave the demo on the platform provider', restorePlatformProvider],
 ];
 
 for (const [title, run] of steps) {

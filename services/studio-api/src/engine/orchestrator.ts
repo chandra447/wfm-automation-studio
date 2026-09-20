@@ -24,6 +24,7 @@ import { NotFoundError } from './errors.ts';
 import type { RunScope } from './scope.ts';
 import type { ResumePayload } from './state.ts';
 import type { Proposer } from './nodes/proposers.ts';
+import type { AgentRunner } from './nodes/agent-runner.ts';
 
 export const ROUTER_CONSUMER_GROUP = 'studio-router';
 
@@ -45,6 +46,8 @@ export interface OrchestratorDeps {
   clients: ExecutorDeps['clients'];
   queue: QueueGateway;
   proposer: Proposer;
+  /** Null only when the engine was built without a model layer. */
+  agent: AgentRunner | null;
   checkpointer: BaseCheckpointSaver;
   logger: Logger;
   dryRun?: boolean;
@@ -362,6 +365,7 @@ export class Orchestrator {
       clients: deps.clients,
       queue: deps.queue,
       proposer: deps.proposer,
+      agent: deps.agent,
       logger: deps.logger,
     };
   }

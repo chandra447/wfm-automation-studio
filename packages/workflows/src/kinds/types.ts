@@ -136,7 +136,7 @@ export interface NodeKind<TType extends string = string, S extends z.ZodObject<z
    * the validator calls it before reading any capability.
    */
   readonly capabilitiesOf?: (node: NodeLike) => NodeCapabilities;
-  readonly palette: { label: string; description: string; accent: string; icon: string };
+  readonly palette: { label: string; description: string; accent: string };
   readonly defaultLabel: string;
   readonly defaultConfig: z.input<S>;
   readonly fields: readonly FieldSpec[];

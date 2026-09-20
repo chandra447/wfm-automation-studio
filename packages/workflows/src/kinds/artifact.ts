@@ -22,7 +22,6 @@ export const artifactKind = defineKind(
       label: 'Artifact',
       description: 'Renders a document from run data and attaches it to the run.',
       accent: 'teal',
-      icon: '📄',
     },
     defaultLabel: 'Artifact',
     defaultConfig: {

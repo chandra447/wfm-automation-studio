@@ -24,3 +24,20 @@ export type EdgePort = z.infer<typeof edgePortSchema>;
  */
 export const NODE_WIDTH = 300;
 export const NODE_HEIGHT = 180;
+
+/** The policy checks a policy node can run. */
+export const policyCheckKindSchema = z.enum([
+  'cost_delta_cap',
+  'rest_rule',
+  'availability',
+  'award_validity',
+  'overtime_risk',
+]);
+
+export type PolicyCheckKind = z.infer<typeof policyCheckKindSchema>;
+
+/** What an approval card shows the person deciding. */
+export const approvalDisplaySchema = z.enum(['rationale', 'evidence', 'payImpact', 'candidateComparison']);
+
+/** The shapes an AI node's structured output can take. */
+export const aiOutputSchema = z.enum(['candidate_choice', 'timesheet_adjustment', 'coverage_plan']);

@@ -6,11 +6,14 @@ import type { QueueGateway, RunScope } from '../scope.ts';
 import type { RunStateFields } from '../state.ts';
 import type { RunDb } from '../run-store.ts';
 import type { Proposer } from './proposers.ts';
+import type { AgentRunner } from './agent-runner.ts';
 
 /**
  * Everything a node executor may touch. The proposer is injected (LLM when a
  * key is configured, rules otherwise) so executors never import model clients
- * directly.
+ * directly. The agent runner is null when the engine has no model layer at all;
+ * an agent node then fails rather than falling back to a deterministic path it
+ * does not have.
  */
 export interface ExecutorDeps {
   db: RunDb;
@@ -18,6 +21,7 @@ export interface ExecutorDeps {
   clients: DomainClients;
   queue: QueueGateway;
   proposer: Proposer;
+  agent: AgentRunner | null;
   logger: Logger;
 }
 

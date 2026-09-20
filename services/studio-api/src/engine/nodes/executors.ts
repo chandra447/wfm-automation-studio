@@ -2,6 +2,7 @@ import type { WorkflowNode, WorkflowNodeType } from '@wfm/workflows';
 import type { RunScope, RunStateFields } from '../state.ts';
 import type { ExecutorDeps } from './context.ts';
 import { runActionNode } from './action.ts';
+import { runAgentNode } from './agent.ts';
 import { runApprovalNode } from './approval.ts';
 import { runArtifactNode } from './artifact.ts';
 import { runConditionNode } from './condition.ts';
@@ -34,6 +35,7 @@ export const nodeExecutors: { [K in WorkflowNodeType]: NodeExecutor } = {
   trigger: (scope, deps, node, state) => runTriggerNode(scope, deps, node, state),
   condition: (scope, deps, node, state) => runConditionNode(scope, deps, node, state),
   ai_decision: (scope, deps, node, state) => runProposeNode(scope, deps, node, state),
+  agent: (scope, deps, node, state) => runAgentNode(scope, deps, node, state),
   policy_check: (scope, deps, node, state) => runPolicyNode(scope, deps, node, state),
   human_approval: (scope, deps, node, state) => runApprovalNode(scope, deps, node, state),
   action: (scope, deps, node, state) => runActionNode(scope, deps, node, state),

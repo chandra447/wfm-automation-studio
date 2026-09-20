@@ -244,7 +244,7 @@ export class RulesProposer implements Proposer {
   }
 }
 
-const OUTPUT_SCHEMAS: Record<AiDecisionNode['config']['output'], z.ZodType> = {
+export const OUTPUT_SCHEMAS: Record<AiDecisionNode['config']['output'], z.ZodObject> = {
   candidate_choice: candidateChoiceOutputSchema,
   timesheet_adjustment: timesheetAdjustmentOutputSchema,
   coverage_plan: coveragePlanOutputSchema,
@@ -301,7 +301,7 @@ export class LlmProposer implements Proposer {
             `llm proposal failed schema validation: ${validated.error.issues.map((issue) => issue.path.join('.')).join(', ')}`,
           );
         }
-        const result = this.#withoutIneligible(validated.data as ProposalOutputShape, input);
+        const result = withoutIneligible(validated.data as ProposalOutputShape, input.data);
         return {
           output: result,
           rationale: result.rationale,
@@ -334,24 +334,29 @@ export class LlmProposer implements Proposer {
       status,
     });
   }
+}
 
-  #withoutIneligible(result: ProposalOutputShape, input: ProposerInput): ProposalOutputShape {
-    if (!('employeeIds' in result)) return result;
-    const candidates = candidateListSchema.safeParse(input.data['shift.candidates']);
-    if (!candidates.success) return result;
-    const eligible = new Set(
-      candidates.data.candidates
-        .filter((candidate) => candidate.meetsRestRule && candidate.overtimeRisk !== 'high')
-        .map((candidate) => candidate.employeeId),
-    );
-    const filtered = result.employeeIds.filter((employeeId) => eligible.has(employeeId));
-    const firstEligible = filtered[0];
-    if (!firstEligible) {
-      throw new ProposerError('llm proposal contained no eligible employee after policy filtering');
-    }
-    const topCandidateId = eligible.has(result.topCandidateId) ? result.topCandidateId : firstEligible;
-    return { ...result, employeeIds: filtered, topCandidateId };
+/**
+ * Policy filtering over a model's answer: only employees the candidate list
+ * marks eligible survive, and the top pick moves to the first survivor when the
+ * model named an ineligible one. The model proposes; the tool data decides.
+ */
+export function withoutIneligible(result: ProposalOutputShape, data: Record<string, unknown>): ProposalOutputShape {
+  if (!('employeeIds' in result)) return result;
+  const candidates = candidateListSchema.safeParse(data['shift.candidates']);
+  if (!candidates.success) return result;
+  const eligible = new Set(
+    candidates.data.candidates
+      .filter((candidate) => candidate.meetsRestRule && candidate.overtimeRisk !== 'high')
+      .map((candidate) => candidate.employeeId),
+  );
+  const filtered = result.employeeIds.filter((employeeId) => eligible.has(employeeId));
+  const firstEligible = filtered[0];
+  if (!firstEligible) {
+    throw new ProposerError('llm proposal contained no eligible employee after policy filtering');
   }
+  const topCandidateId = eligible.has(result.topCandidateId) ? result.topCandidateId : firstEligible;
+  return { ...result, employeeIds: filtered, topCandidateId };
 }
 
 /**
@@ -360,7 +365,7 @@ export class LlmProposer implements Proposer {
  * prompt structure or tool data, and the header states the precedence it has:
  * above the default ranking, below the policy data.
  */
-function steeringSection(messages: readonly RunMessage[]): string {
+export function steeringSection(messages: readonly RunMessage[]): string {
   if (messages.length === 0) return '';
   const quoted = messages
     .flatMap((message) => message.content.split('\n').map((line) => `> ${line}`))
@@ -380,7 +385,7 @@ function outputKeysFor(output: AiDecisionNode['config']['output']): string[] {
 }
 
 /** A model that wrapped its JSON in prose or fences is still usable. */
-function parseJsonObject(content: string): unknown {
+export function parseJsonObject(content: string): unknown {
   const trimmed = content.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
   try {
     return JSON.parse(trimmed);

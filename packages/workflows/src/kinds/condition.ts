@@ -30,7 +30,6 @@ export const conditionKind = defineKind(
       label: 'If / else',
       description: 'Branches on event fields, resolved context, or earlier node outputs.',
       accent: 'sky',
-      icon: '⑂',
     },
     defaultLabel: 'If / else',
     defaultConfig: { description: '', conditions: [{ field: 'input.payload.shiftId', op: 'exists' }] },

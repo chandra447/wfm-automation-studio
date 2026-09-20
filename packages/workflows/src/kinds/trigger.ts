@@ -16,7 +16,6 @@ export const triggerKind = defineKind(
       label: 'When event happens',
       description: 'Starts the workflow from a platform event, optionally filtered by conditions.',
       accent: 'amber',
-      icon: '⚡',
     },
     defaultLabel: 'When event happens',
     defaultConfig: { eventType: 'shift.cancelled', conditions: [] },

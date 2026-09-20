@@ -23,7 +23,6 @@ export const actionKind = defineKind(
       label: 'Action',
       description: 'Issues a typed command to a domain service. Idempotent and fully audited.',
       accent: 'orange',
-      icon: '➤',
     },
     defaultLabel: 'Action',
     defaultConfig: { command: 'rostering.send_offers', input: {} },

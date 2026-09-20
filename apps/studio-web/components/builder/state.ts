@@ -38,6 +38,7 @@ export const accentVarByNodeType: Record<WorkflowNodeType, string> = {
   trigger: 'var(--color-node-trigger)',
   condition: 'var(--color-node-condition)',
   ai_decision: 'var(--color-node-ai)',
+  agent: 'var(--color-node-agent)',
   policy_check: 'var(--color-node-policy)',
   human_approval: 'var(--color-node-approval)',
   action: 'var(--color-node-action)',

@@ -57,6 +57,7 @@ const cardFieldKeys: Record<WorkflowNodeType, readonly string[]> = {
   trigger: ['eventType'],
   condition: ['conditions'],
   ai_decision: ['model'],
+  agent: ['maxSteps', 'model'],
   policy_check: ['checks'],
   human_approval: ['role'],
   action: ['command'],

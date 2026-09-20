@@ -12,7 +12,6 @@ export const endKind = defineKind(
       label: 'End',
       description: 'Terminates the path with an outcome.',
       accent: 'slate',
-      icon: '⏹',
     },
     defaultLabel: 'End',
     defaultConfig: { outcome: 'completed' },

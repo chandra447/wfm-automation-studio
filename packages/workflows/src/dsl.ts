@@ -1,5 +1,14 @@
 import { z } from 'zod';
-import { edgePortSchema, nodeIdSchema, NODE_HEIGHT, NODE_WIDTH, type EdgePort } from './primitives.ts';
+import {
+  aiOutputSchema,
+  approvalDisplaySchema,
+  edgePortSchema,
+  nodeIdSchema,
+  policyCheckKindSchema,
+  NODE_HEIGHT,
+  NODE_WIDTH,
+  type EdgePort,
+} from './primitives.ts';
 import {
   workflowNodeSchema,
   workflowNodeTypeSchema,
@@ -22,19 +31,8 @@ import {
 export { edgePortSchema, nodeIdSchema, NODE_HEIGHT, NODE_WIDTH, workflowNodeTypeSchema, workflowNodeSchema };
 export type { EdgePort, WorkflowNode, WorkflowNodeType };
 
-export const policyCheckKindSchema = z.enum([
-  'cost_delta_cap',
-  'rest_rule',
-  'availability',
-  'award_validity',
-  'overtime_risk',
-]);
-
-export type PolicyCheckKind = z.infer<typeof policyCheckKindSchema>;
-
-export const approvalDisplaySchema = z.enum(['rationale', 'evidence', 'payImpact', 'candidateComparison']);
-
-export const aiOutputSchema = z.enum(['candidate_choice', 'timesheet_adjustment', 'coverage_plan']);
+export { policyCheckKindSchema, approvalDisplaySchema, aiOutputSchema };
+export type { PolicyCheckKind } from './primitives.ts';
 
 export const workflowEdgeSchema = z.object({
   from: nodeIdSchema,
@@ -58,6 +56,7 @@ export type WorkflowDefinition = z.infer<typeof workflowDefinitionSchema>;
 export type TriggerNode = NodeFor<'trigger'>;
 export type ConditionNode = NodeFor<'condition'>;
 export type AiDecisionNode = NodeFor<'ai_decision'>;
+export type AgentNode = NodeFor<'agent'>;
 export type PolicyCheckNode = NodeFor<'policy_check'>;
 export type HumanApprovalNode = NodeFor<'human_approval'>;
 export type ActionNode = NodeFor<'action'>;

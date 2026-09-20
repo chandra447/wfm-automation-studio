@@ -1,13 +1,7 @@
 import { z } from 'zod';
+import { policyCheckKindSchema } from '../primitives.ts';
 import { defineKind } from './define.ts';
 
-const policyCheckKindSchema = z.enum([
-  'cost_delta_cap',
-  'rest_rule',
-  'availability',
-  'award_validity',
-  'overtime_risk',
-]);
 
 export const policyCheckKind = defineKind(
   'policy_check',
@@ -38,7 +32,6 @@ export const policyCheckKind = defineKind(
       label: 'Policy check',
       description: 'Deterministic guardrails: cost caps, rest rules, availability, award validity.',
       accent: 'emerald',
-      icon: '⛨',
     },
     defaultLabel: 'Policy check',
     defaultConfig: { checks: ['rest_rule'], costCapCents: 0, escalateOnFailure: true },

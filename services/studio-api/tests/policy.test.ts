@@ -118,6 +118,7 @@ async function evaluate(node: PolicyCheckNode, state: RunStateFields): Promise<P
     clients: stubs,
     queue: { enqueueRunStart: async () => {}, enqueueRunStep: async () => {}, scheduleApprovalTimeout: async () => {}, start: async () => {}, stop: async () => {} },
     proposer: harness.proposer,
+    agent: null,
     logger,
   };
   const scope = {

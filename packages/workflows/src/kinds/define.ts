@@ -22,7 +22,7 @@ export interface KindDefinition<TType extends string, S extends z.ZodObject<z.Zo
   requiredPorts?: readonly PortRequirement[];
   capabilities: NodeCapabilities;
   capabilitiesOf?: (node: NodeOfKind<TType, S>) => NodeCapabilities;
-  palette: { label: string; description: string; accent: string; icon: string };
+  palette: { label: string; description: string; accent: string };
   defaultLabel: string;
   defaultConfig: z.input<S>;
   fields: readonly FieldSpec[];

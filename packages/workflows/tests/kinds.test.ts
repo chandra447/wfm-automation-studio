@@ -84,6 +84,8 @@ describe('union narrowing', () => {
           return String(node.config.conditions.length);
         case 'ai_decision':
           return node.config.output;
+        case 'agent':
+          return String(node.config.maxSteps);
         case 'policy_check':
           return node.config.checks.join(',');
         case 'human_approval':
@@ -98,6 +100,7 @@ describe('union narrowing', () => {
     };
     expect(read(defaultNodeOf('artifact', 'a'))).toBe('Run summary');
     expect(read(defaultNodeOf('trigger', 'b'))).toBe('shift.cancelled');
+    expect(read(defaultNodeOf('agent', 'c'))).toBe('6');
   });
 });
 
@@ -111,7 +114,7 @@ describe('a kind the rules have never seen', () => {
     inputs: [{ id: 'in', label: 'Input' }],
     capabilities: { mutatesDomain: true },
     capabilitiesOf: () => ({ mutatesDomain: true, payImpact: true }),
-    palette: { label: 'Notify', description: 'Sends a message.', accent: 'teal', icon: '✉' },
+    palette: { label: 'Notify', description: 'Sends a message.', accent: 'teal' },
     defaultLabel: 'Notify',
     defaultConfig: { channel: 'ops' },
     fields: [{ key: 'channel', label: 'Channel', control: { kind: 'text' } }],

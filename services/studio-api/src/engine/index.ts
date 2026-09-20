@@ -64,6 +64,7 @@ import {
   type RunRow,
 } from './run-store.ts';
 import { ResolvingProposer, type Proposer } from './nodes/proposers.ts';
+import { ResolvingAgentRunner } from './nodes/agent-runner.ts';
 import { createLlmServices, type LlmServices } from '../llm/index.ts';
 import { getArtifact, listArtifactsForRun } from './artifact-store.ts';
 import { buildDataCatalogue } from './data-catalogue.ts';
@@ -114,6 +115,7 @@ export function createEngine(context: EngineContext): Wiring {
     clients: context.clients,
     queue: context.queue,
     proposer: context.proposer,
+    agent: new ResolvingAgentRunner({ settings: context.llm.settings, accounting: context.llm.accounting }),
     checkpointer: context.checkpointer,
     logger: context.logger,
     dryRun: context.dryRun,
