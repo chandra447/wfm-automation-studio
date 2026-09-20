@@ -158,7 +158,7 @@ Both are driven by the services, not by a test hook. The simulator calls the sam
 
 - **Runtime and types.** Bun, strict TypeScript, no `any`, external data parsed at boundaries with zod. The UI imports the server's route types through Elysia's Eden treaty.
 - **Data.** Postgres with Drizzle ORM over Bun's built-in SQL client, one database per service. A domain write and its outbox rows share a transaction, which is what makes at-least-once publication safe.
-- **Events.** One envelope shape everywhere, versioned, tenant-partitioned, carrying correlation, causation, and trace context. Payloads carry identity, not truth, so consumers re-read current state. This mirrors the skinny webhooks Humanforce HR already emits.
+- **Events.** One envelope shape everywhere, versioned, tenant-partitioned, carrying correlation, causation, and trace context. Payloads carry identity, not truth, so consumers re-read current state. This mirrors the skinny webhooks Humanforce HR already emits. The Redis Streams binding runs on Bun's own Redis client, so our packages carry no Redis driver; BullMQ brings its own, which is a property of that library rather than a choice here.
 - **Execution.** BullMQ owns retries, backoff, delayed approval timeouts, and concurrency. LangGraph owns the graph and the interrupt. Our orchestrator owns the run record, the audit, and the timeline.
 - **AI.** Optional and pluggable. `LlmProvider` is an abstract class over raw HTTP with two implementations (OpenAI-compatible, Anthropic); the deterministic rules proposer is the fallback whenever a tenant has no provider. Whichever ran, policy and human authority stay in the path, and the run records which model produced the proposal.
 

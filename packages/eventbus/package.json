@@ -7,7 +7,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@wfm/contracts": "workspace:*",
-    "ioredis": "^5.8.1"
+    "@wfm/contracts": "workspace:*"
   }
 }

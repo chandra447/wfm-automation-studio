@@ -13,7 +13,10 @@ consumes. The team's target is Azure Event Hubs. A local demo also has to run on
 Define `EventBus` as a port with two methods (`publish`, `subscribe`) and three adapters:
 
 1. `RedisStreamsEventBus` — default local binding; consumer groups (`XREADGROUP`/`XACK`), replay,
-   partition-key ordering by stream, per-group offsets, DLQ streams.
+   partition-key ordering by stream, per-group offsets, DLQ streams. It runs on Bun's own Redis
+   client, so nothing we wrote depends on a Redis driver package: the typed commands cover the
+   everyday ones and the stream commands go through the client's raw `send`, which is the same
+   protocol and the same replies.
 2. `InMemoryEventBus` — tests and single-process demos; deterministic, no I/O.
 3. `EventHubsEventBus` — production binding over the AMQP SDK, using the same envelope; the demo does
    not require it to run.

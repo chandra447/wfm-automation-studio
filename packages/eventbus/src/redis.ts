@@ -1,6 +1,6 @@
+import { RedisClient } from 'bun';
 import type { AnyWfmEvent } from '@wfm/contracts';
 import { parseEvent } from '@wfm/contracts';
-import { Redis } from 'ioredis';
 import {
   PermanentEventFailure,
   streamNameFor,
@@ -21,8 +21,17 @@ export interface RedisBusOptions {
 const DEFAULT_CLAIM_IDLE_MS = 15_000;
 const DEFAULT_MAX_STREAM_LENGTH = 10_000;
 
+/** The reply Redis sends for one stream read, which Bun hands back as written. */
+type StreamReadReply = Record<string, Array<[string, string[]]>> | null;
+
+/** `[next cursor, entries, ids that no longer exist]`. */
+type AutoClaimReply = [string, Array<[string, string[]]>, string[]];
+
 /**
- * Redis Streams binding.
+ * Redis Streams binding over Bun's own client, so the bus carries no vendor
+ * package. The client types most commands but not the stream ones, so those go
+ * through `send` with the command and its arguments, which is the same wire
+ * protocol and the same reply shape.
  *
  * Mapping to Azure Event Hubs, which is the production binding:
  *   stream                    → event hub (partitioned by tenant key)
@@ -33,35 +42,37 @@ const DEFAULT_MAX_STREAM_LENGTH = 10_000;
  *   `<stream>.dlq`            → dead-letter hub
  */
 export class RedisStreamsEventBus implements EventBus {
-  readonly #redis: Redis;
-  readonly #blocker: Redis;
+  readonly #redis: RedisClient;
+  readonly #blocker: RedisClient;
+  /** Both sockets before the first command; the constructor cannot await. */
+  readonly #ready: Promise<void>;
   readonly #prefix: string;
   readonly #claimIdleMs: number;
   readonly #maxStreamLength: number;
 
   constructor(options: RedisBusOptions) {
-    this.#redis = new Redis(options.url, { maxRetriesPerRequest: null });
-    this.#blocker = new Redis(options.url, { maxRetriesPerRequest: null });
+    this.#redis = new RedisClient(options.url);
+    this.#blocker = new RedisClient(options.url);
+    this.#ready = Promise.all([this.#redis.connect(), this.#blocker.connect()]).then(() => undefined);
     this.#prefix = options.prefix ?? 'wfm.events';
     this.#claimIdleMs = options.claimIdleMs ?? DEFAULT_CLAIM_IDLE_MS;
     this.#maxStreamLength = options.maxStreamLength ?? DEFAULT_MAX_STREAM_LENGTH;
   }
 
   async ping(): Promise<void> {
-    await this.#redis.ping();
+    await this.#send('PING', []);
   }
 
   async publish(tenantId: string, event: AnyWfmEvent): Promise<void> {
-    const stream = streamNameFor(this.#prefix, tenantId);
-    await this.#redis.xadd(
-      stream,
+    await this.#send('XADD', [
+      streamNameFor(this.#prefix, tenantId),
       'MAXLEN',
       '~',
       String(this.#maxStreamLength),
       '*',
       'event',
       JSON.stringify(event),
-    );
+    ]);
   }
 
   async subscribe(options: SubscribeOptions): Promise<Subscription> {
@@ -70,12 +81,7 @@ export class RedisStreamsEventBus implements EventBus {
     await this.#ensureGroup(stream, options.group);
 
     let stopped = false;
-    const loop = this.#consumeLoop({
-      stream,
-      deadLetterStream,
-      options,
-      isStopped: () => stopped,
-    });
+    const loop = this.#consumeLoop({ stream, deadLetterStream, options, isStopped: () => stopped });
 
     return {
       stop: async () => {
@@ -86,12 +92,18 @@ export class RedisStreamsEventBus implements EventBus {
   }
 
   async close(): Promise<void> {
-    await Promise.all([this.#redis.quit(), this.#blocker.quit()]);
+    await Promise.all([this.#redis.close(), this.#blocker.close()]);
+  }
+
+  /** A command on the client that is never blocked, which every write uses. */
+  async #send(command: string, args: string[]): Promise<unknown> {
+    await this.#ready;
+    return this.#redis.send(command, args);
   }
 
   async #ensureGroup(stream: string, group: string): Promise<void> {
     try {
-      await this.#redis.xgroup('CREATE', stream, group, '$', 'MKSTREAM');
+      await this.#send('XGROUP', ['CREATE', stream, group, '$', 'MKSTREAM']);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!message.includes('BUSYGROUP')) throw error;
@@ -110,7 +122,8 @@ export class RedisStreamsEventBus implements EventBus {
       const reclaimed = await this.#reclaimStale(stream, options);
       if (reclaimed > 0) continue;
 
-      const response = (await this.#blocker.xreadgroup(
+      await this.#ready;
+      const reply = (await this.#blocker.send('XREADGROUP', [
         'GROUP',
         options.group,
         options.consumer,
@@ -121,11 +134,9 @@ export class RedisStreamsEventBus implements EventBus {
         'STREAMS',
         stream,
         '>',
-      )) as Array<[string, Array<[string, string[]]>]> | null;
+      ])) as StreamReadReply;
 
-      if (!response) continue;
-
-      for (const [, entries] of response) {
+      for (const entries of Object.values(reply ?? {})) {
         for (const [entryId, fields] of entries) {
           await this.#handleEntry({ stream, deadLetterStream, options, entryId, fields });
         }
@@ -134,7 +145,7 @@ export class RedisStreamsEventBus implements EventBus {
   }
 
   async #reclaimStale(stream: string, options: SubscribeOptions): Promise<number> {
-    const response = (await this.#redis.xautoclaim(
+    const reply = (await this.#send('XAUTOCLAIM', [
       stream,
       options.group,
       options.consumer,
@@ -142,9 +153,9 @@ export class RedisStreamsEventBus implements EventBus {
       '0-0',
       'COUNT',
       '10',
-    )) as [string, Array<[string, string[]]>, string[]];
+    ])) as AutoClaimReply;
 
-    const entries = response[1] ?? [];
+    const entries = reply[1] ?? [];
     for (const [entryId, fields] of entries) {
       await this.#handleEntry({
         stream,
@@ -170,12 +181,12 @@ export class RedisStreamsEventBus implements EventBus {
     try {
       const event = parseEvent(JSON.parse(raw));
       await options.onEvent(event);
-      await this.#redis.xack(stream, options.group, entryId);
+      await this.#send('XACK', [stream, options.group, entryId]);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       if (error instanceof PermanentEventFailure) {
-        await this.#redis.xadd(deadLetterStream, '*', 'event', raw, 'reason', reason);
-        await this.#redis.xack(stream, options.group, entryId);
+        await this.#send('XADD', [deadLetterStream, '*', 'event', raw, 'reason', reason]);
+        await this.#send('XACK', [stream, options.group, entryId]);
         await options.onPermanentFailure?.(raw, reason);
         return;
       }

@@ -1,5 +1,4 @@
 import { Queue, Worker, type Job } from 'bullmq';
-import IORedis from 'ioredis';
 import { z } from 'zod';
 import type { Logger } from 'pino';
 import type { Orchestrator } from './orchestrator.ts';
@@ -35,7 +34,10 @@ const jobDataSchema = z.object({
  * gate; the commands themselves are idempotent, so a skewed schedule is safe.
  */
 export function createQueueGateway(options: QueueOptions): QueueGateway & { close: () => Promise<void> } {
-  const connection = new IORedis(options.redisUrl, { maxRetriesPerRequest: null });
+  // Connection options rather than a client: BullMQ owns its own sockets, one
+  // for the queue and a blocking one for the worker, so it never shares a
+  // connection that another command can stall.
+  const connection = redisConnection(options.redisUrl);
   const gate = new PerTenantGate(options.perTenantConcurrency ?? 2);
   const defaultJobOptions = {
     attempts: ATTEMPTS,
@@ -98,10 +100,38 @@ export function createQueueGateway(options: QueueOptions): QueueGateway & { clos
       await queue.close();
     },
     close: async () => {
-      await connection.quit();
+      // Both close their own connections; calling stop twice is safe.
+      await worker.close();
+      await queue.close();
     },
   };
   return gateway;
+}
+
+export interface RedisConnectionOptions {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  db?: number;
+  /**
+   * BullMQ's own requirement: a worker's blocking command must not be given up
+   * on after a fixed number of retries.
+   */
+  maxRetriesPerRequest: null;
+}
+
+/** `REDIS_URL` in the pieces BullMQ hands to the client it builds itself. */
+export function redisConnection(redisUrl: string): RedisConnectionOptions {
+  const url = new URL(redisUrl);
+  return {
+    host: url.hostname,
+    port: url.port === '' ? 6379 : Number(url.port),
+    ...(url.username === '' ? {} : { username: decodeURIComponent(url.username) }),
+    ...(url.password === '' ? {} : { password: decodeURIComponent(url.password) }),
+    ...(url.pathname.length > 1 ? { db: Number(url.pathname.slice(1)) } : {}),
+    maxRetriesPerRequest: null,
+  };
 }
 
 async function runStepOrThrow(

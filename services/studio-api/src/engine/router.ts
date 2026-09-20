@@ -9,6 +9,13 @@ import { eq } from 'drizzle-orm';
 import type { SQL } from 'bun';
 
 /**
+ * This process's consumer name inside the router group. A container id or pid
+ * distinguishes processes; the point is that it does not change while the
+ * process lives.
+ */
+const CONSUMER_NAME = `router-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
+
+/**
  * The event router (design §7). For every tenant with an enabled workflow it
  * holds a bus subscription: validate (unknown type/version is permanent —
  * ADR-0007), dedupe through processed_events, match published workflow
@@ -73,7 +80,10 @@ export class Router {
       this.#subscriptions[tenantId] = await this.#options.bus.subscribe({
         tenantId,
         group: 'studio-router',
-        consumer: `router-${crypto.randomUUID()}`,
+        // One name for this process, not one per subscription: a fresh name on
+        // every scan leaves an idle consumer behind in the group forever, and
+        // the group's pending lists are what a reclaim has to walk.
+        consumer: CONSUMER_NAME,
         onEvent: (event) => this.#onEvent(event),
         onPermanentFailure: (raw, reason) => this.#deadLetter(raw, reason),
       });
