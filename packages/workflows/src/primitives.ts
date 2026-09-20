@@ -17,5 +17,10 @@ export const edgePortSchema = z.enum(['always', 'true', 'false', 'passed', 'fail
 
 export type EdgePort = z.infer<typeof edgePortSchema>;
 
-export const NODE_WIDTH = 220;
-export const NODE_HEIGHT = 88;
+/**
+ * The canvas card's nominal size. A card is as tall as its fields make it, so
+ * the height is a layout hint for spacing rather than a measurement: what
+ * depends on it is where an added node lands and where a dropped node centres.
+ */
+export const NODE_WIDTH = 300;
+export const NODE_HEIGHT = 180;

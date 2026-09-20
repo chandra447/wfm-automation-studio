@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { ArrowClockwise, ArrowCounterClockwise, ArrowLeft } from '@phosphor-icons/react';
 import type { WorkflowDefinition } from '@wfm/workflows';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -9,6 +10,11 @@ import { cn } from '@/lib/utils';
 
 export type SaveState = 'clean' | 'dirty' | 'saving' | 'failed' | 'conflict';
 
+/**
+ * The floating top bar. It keeps the whole run of workflow-level actions in one
+ * rounded strip over the canvas: what the workflow is called, whether the draft
+ * is on the server, and the undo/save/publish controls.
+ */
 export function Toolbar({
   definition,
   saveState,
@@ -55,24 +61,27 @@ export function Toolbar({
             : 'Saved';
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-4 py-2">
+    <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-3 py-2 shadow-2xl shadow-black/50">
       <Link
         href="/builder"
-        className="rounded-md px-2 py-1 text-xs text-[var(--color-ink-muted)] hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-ink)]"
+        className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-[var(--color-ink-muted)] transition-colors hover:bg-[var(--color-surface-raised)] hover:text-[var(--color-ink)]"
       >
-        ← Workflows
+        <ArrowLeft className="h-3.5 w-3.5" />
+        Workflows
       </Link>
       <Input
         value={definition.name}
         maxLength={120}
         aria-label="Workflow name"
-        className="h-8 w-64 text-sm"
+        className="h-8 w-56 text-sm"
         onChange={(event) => onRename(event.target.value)}
       />
       <span
         className={cn(
           'flex items-center gap-1.5 text-[11px]',
-          saveState === 'failed' || saveState === 'conflict' ? 'text-[var(--color-danger)]' : 'text-[var(--color-ink-faint)]',
+          saveState === 'failed' || saveState === 'conflict'
+            ? 'text-[var(--color-danger)]'
+            : 'text-[var(--color-ink-faint)]',
         )}
       >
         <span
@@ -96,10 +105,10 @@ export function Toolbar({
 
       <div className="ml-auto flex items-center gap-1.5">
         <Button variant="outline" size="icon-sm" aria-label="Undo" disabled={!canUndo} onClick={onUndo}>
-          ↺
+          <ArrowCounterClockwise />
         </Button>
         <Button variant="outline" size="icon-sm" aria-label="Redo" disabled={!canRedo} onClick={onRedo}>
-          ↻
+          <ArrowClockwise />
         </Button>
         <Button variant="outline" size="sm" disabled={offline || saveState === 'clean' || saving} onClick={onSaveNow}>
           Save

@@ -30,7 +30,7 @@ function Turn({ message }: { message: BuilderChatMessage }) {
   return (
     <article
       className={cn(
-        'flex flex-col gap-1.5 rounded-md px-2.5 py-2',
+        'flex min-w-0 flex-col gap-1.5 rounded-lg px-2.5 py-2',
         assistant ? 'bg-[var(--color-surface-raised)]' : 'border border-[var(--color-border-subtle)]',
       )}
     >
@@ -45,12 +45,12 @@ function Turn({ message }: { message: BuilderChatMessage }) {
           {new Date(message.at).toLocaleTimeString()}
         </span>
       </div>
-      <p className="whitespace-pre-wrap text-[11px] leading-snug text-[var(--color-ink)]">{message.content}</p>
+      <p className="text-[11px] leading-snug break-words whitespace-pre-wrap text-[var(--color-ink)]">{message.content}</p>
       {message.applied.length > 0 && (
         <ul className="flex flex-wrap gap-1">
           {message.applied.map((line, index) => (
-            <li key={`${line}:${index}`}>
-              <Badge className="h-auto max-w-full bg-[var(--color-success-soft)] text-left font-normal whitespace-normal text-[var(--color-success)]">
+            <li key={`${line}:${index}`} className="min-w-0 max-w-full">
+              <Badge className="h-auto max-w-full bg-[var(--color-success-soft)] text-left font-normal break-words whitespace-normal text-[var(--color-success)]">
                 {line}
               </Badge>
             </li>
@@ -60,10 +60,10 @@ function Turn({ message }: { message: BuilderChatMessage }) {
       {message.rejected.length > 0 && (
         <ul className="flex flex-col items-start gap-1">
           {message.rejected.map((rejection, index) => (
-            <li key={`${rejection.op}:${rejection.target}:${index}`} className="max-w-full">
+            <li key={`${rejection.op}:${rejection.target}:${index}`} className="min-w-0 max-w-full">
               <Badge
                 title={`${rejection.op} ${rejection.target}`.trim()}
-                className="h-auto max-w-full bg-[var(--color-warning-soft)] text-left font-normal whitespace-normal text-[var(--color-warning)]"
+                className="h-auto max-w-full bg-[var(--color-warning-soft)] text-left font-normal break-words whitespace-normal text-[var(--color-warning)]"
               >
                 {rejection.reason}
               </Badge>
@@ -224,12 +224,8 @@ export function ChatPanel({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex shrink-0 flex-col gap-1.5 border-b border-[var(--color-border-subtle)] px-3 py-2">
-        <div className="flex items-baseline justify-between gap-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">Agent</p>
-          <span className="text-[10px] text-[var(--color-ink-faint)]">sees the canvas as it stands</span>
-        </div>
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 flex-col gap-2 border-b border-[var(--color-border-subtle)] px-3 py-2.5">
         <Select value={modelChoice} onValueChange={setModelChoice}>
           <SelectTrigger size="sm" className="w-full" aria-label="Chat model">
             <SelectValue placeholder="Tenant default model" />
@@ -243,8 +239,11 @@ export function ChatPanel({
             ))}
           </SelectContent>
         </Select>
-      </header>
-      <div ref={transcriptRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-3">
+        <p className="text-[10px] leading-snug text-[var(--color-ink-faint)]">
+          Each turn carries the canvas as it stands.
+        </p>
+      </div>
+      <div ref={transcriptRef} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-2.5">
         {messages.length === 0 && !sending && (
           <p className="text-[11px] leading-snug text-[var(--color-ink-faint)]">
             Ask the agent to add a node, rewire a branch, or explain the graph. Each turn carries the definition and
@@ -281,10 +280,10 @@ export function ChatPanel({
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
           disabled={disabled || sending}
-          rows={3}
+          rows={2}
           aria-label="Message the builder agent"
           placeholder={disabled ? 'Waiting for the workflow to load…' : 'Ask the agent to change the graph…'}
-          className="min-h-16 resize-none"
+          className="min-h-12 resize-none"
         />
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] text-[var(--color-ink-faint)]">⌘↵ to send</span>

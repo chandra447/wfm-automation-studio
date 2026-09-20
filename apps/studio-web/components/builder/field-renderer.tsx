@@ -18,6 +18,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
+import { cn } from '@/lib/utils';
 import { UNSET_OPTION_VALUE, optionsFor, type ControlOption, type OptionSources } from './control-options';
 
 type TemplateFieldElement = HTMLInputElement | HTMLTextAreaElement;
@@ -35,6 +36,18 @@ interface TemplateFieldRegistry {
 }
 
 const TemplateFieldContext = createContext<TemplateFieldRegistry | null>(null);
+
+/**
+ * A node card shows a field's control and its value, not the inspector's
+ * explanation of it, and it has far less room. Density travels in a context so
+ * the controls themselves keep their props unchanged; everything outside a
+ * provider — the inspector — renders comfortable.
+ */
+const FieldDensityContext = createContext<'comfortable' | 'compact'>('comfortable');
+
+export function CompactFieldProvider({ children }: { children: ReactNode }) {
+  return <FieldDensityContext.Provider value="compact">{children}</FieldDensityContext.Provider>;
+}
 
 function targetOf(
   elements: Map<string, TemplateFieldElement>,
@@ -170,12 +183,22 @@ export function FieldShell({
   template?: boolean | undefined;
   children: ReactNode;
 }) {
+  const compact = useContext(FieldDensityContext) === 'compact';
   return (
-    <div className="flex flex-col gap-1.5">
-      <Label className="text-[11px] uppercase tracking-wide text-[var(--color-ink-faint)]">{label}</Label>
+    <div className={cn('flex flex-col', compact ? 'gap-1' : 'gap-1.5')}>
+      <Label
+        className={cn(
+          'uppercase tracking-wide text-[var(--color-ink-faint)]',
+          compact ? 'text-[10px]' : 'text-[11px]',
+        )}
+      >
+        {label}
+      </Label>
       {children}
-      {hint !== undefined && <p className="text-[10px] leading-snug text-[var(--color-ink-faint)]">{hint}</p>}
-      {template === true && (
+      {!compact && hint !== undefined && (
+        <p className="text-[10px] leading-snug text-[var(--color-ink-faint)]">{hint}</p>
+      )}
+      {!compact && template === true && (
         <p className="text-[10px] leading-snug text-[var(--color-primary)]">
           Templates allowed — {'{{...}}'} reads the trigger event, run metadata, or an earlier node. Pick one from
           the data palette.
@@ -224,15 +247,16 @@ function TextareaControl({
   onChange,
 }: ControlProps<Extract<Control, { kind: 'textarea' }>>) {
   const { ref, onFocus } = useTemplateField<HTMLTextAreaElement>(fieldId, spec.label, spec.template === true);
+  const compact = useContext(FieldDensityContext) === 'compact';
   return (
     <FieldShell label={spec.label} hint={spec.hint} template={spec.template === true}>
       <Textarea
         ref={ref}
         value={stringValue(config[spec.key])}
-        rows={control.rows}
+        rows={compact ? Math.min(control.rows ?? 3, 3) : control.rows}
         maxLength={control.maxLength}
         placeholder={control.placeholder}
-        className="text-xs"
+        className={cn('text-xs', compact && 'max-h-24')}
         onFocus={onFocus}
         onChange={(event) => onChange(spec.key, event.target.value, spec.key)}
       />

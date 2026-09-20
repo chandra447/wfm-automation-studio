@@ -1,4 +1,4 @@
-import { defaultNodeOf, summaryOf } from '@wfm/workflows';
+import { defaultNodeOf, nodePalette, summaryOf } from '@wfm/workflows';
 import { triggerCatalog } from '@wfm/contracts';
 import {
   NODE_HEIGHT,
@@ -56,24 +56,61 @@ export function isEdgePort(value: string | null | undefined): value is EdgePort 
 }
 
 /**
- * Flow nodes for the canvas. Every committed edit rebuilds this array, and
- * React Flow drops a node's selection when the node object is replaced without
- * a `selected` flag — so the selected id is carried through here, otherwise the
- * inspector would close on the first keystroke of a field edit.
+ * A snapshot of a flow node's inputs, so an unchanged node keeps its identity.
+ * The builder writes into it and the canvas owns one for the life of the page.
+ */
+export interface FlowNodeCache {
+  entries: Record<string, { signature: string; node: BuilderFlowNode }>;
+}
+
+export function createFlowNodeCache(): FlowNodeCache {
+  return { entries: {} };
+}
+
+/**
+ * React Flow keeps a node's measurement, its handle bounds, and its drag state
+ * on the node object it was handed, and discards all three when that object is
+ * replaced: `adoptUserNodes` re-reads `measured` off whatever the props carry,
+ * and a fresh object carries nothing, so every render would un-initialise the
+ * graph and the edges would never draw. Reusing the object while nothing the
+ * card renders has changed is what makes the canvas stable, so the builder
+ * returns the previous object whenever the signature matches. The `selected`
+ * flag is part of that signature because React Flow also drops a node's
+ * selection when the object is replaced without it.
  */
 export function toFlowNodes(
   definition: WorkflowDefinition,
   layout: CanvasLayout,
   grouped: Record<string, Diagnostic[]>,
   selectedId: string | null,
+  cache: FlowNodeCache = createFlowNodeCache(),
 ): BuilderFlowNode[] {
-  return definition.nodes.map((node) => ({
-    id: node.id,
-    type: NODE_TYPE,
-    position: layout.positions[node.id] ?? { x: 0, y: 0 },
-    selected: node.id === selectedId,
-    data: { node, diagnostics: grouped[node.id] ?? [] },
-  }));
+  const nodes: BuilderFlowNode[] = [];
+  for (const node of definition.nodes) {
+    const position = layout.positions[node.id] ?? { x: 0, y: 0 };
+    const nodeDiagnostics = grouped[node.id] ?? [];
+    const selected = node.id === selectedId;
+    const signature = JSON.stringify([node, position, nodeDiagnostics, selected]);
+    const cached = cache.entries[node.id];
+    if (cached !== undefined && cached.signature === signature) {
+      nodes.push(cached.node);
+      continue;
+    }
+    const built: BuilderFlowNode = {
+      id: node.id,
+      type: NODE_TYPE,
+      position,
+      selected,
+      data: { node, diagnostics: nodeDiagnostics },
+    };
+    cache.entries[node.id] = { signature, node: built };
+    nodes.push(built);
+  }
+  const live = new Set(definition.nodes.map((node) => node.id));
+  for (const id of Object.keys(cache.entries)) {
+    if (!live.has(id)) delete cache.entries[id];
+  }
+  return nodes;
 }
 
 export function toFlowEdges(definition: WorkflowDefinition): Edge[] {
@@ -172,6 +209,16 @@ export function clearLocalDraft(workflowId: string): void {
 
 export function nodeSummary(node: WorkflowNode): string {
   return summaryOf(node);
+}
+
+/** The palette's own sentence for a kind, which the node card shows under its title. */
+export function nodeDescription(nodeType: WorkflowNodeType): string {
+  return nodePalette.find((entry) => entry.type === nodeType)?.description ?? '';
+}
+
+/** The palette's display name for a kind. */
+export function nodeTypeLabel(nodeType: WorkflowNodeType): string {
+  return nodePalette.find((entry) => entry.type === nodeType)?.label ?? nodeType;
 }
 
 /**

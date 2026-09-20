@@ -91,32 +91,6 @@ body {
   font-feature-settings: 'cv11', 'ss01';
 }
 
-/* React Flow needs its chrome re-skinned to match the console. */
-.react-flow__background {
-  background-color: var(--color-canvas);
-}
-.react-flow__edge-path {
-  stroke: var(--color-border-subtle);
-  stroke-width: 1.5;
-}
-.react-flow__edge.selected .react-flow__edge-path,
-.react-flow__edge:hover .react-flow__edge-path {
-  stroke: var(--color-primary);
-}
-.react-flow__handle {
-  background: var(--color-border-subtle);
-  border: none;
-  width: 8px;
-  height: 8px;
-}
-.react-flow__controls-button {
-  background: var(--color-surface-raised);
-  border-bottom: 1px solid var(--color-border-subtle);
-  fill: var(--color-ink);
-}
-.react-flow__attribution {
-  display: none;
-}
 /*---break---
  */
 .dark {
@@ -211,7 +185,8 @@ body {
 }
 /**
  * React Flow ships a light default skin. Re-skin its chrome to the console
- * palette so the canvas, the edges, and the minimap read as one surface.
+ * palette so the canvas, the edges, the ports, and the minimap read as one
+ * surface: a dotted grid, hairline edges, and ports punched out of the card.
  */
 .react-flow__background {
   background-color: var(--color-canvas);
@@ -227,11 +202,18 @@ body {
 .react-flow__edge-text {
   fill: var(--color-ink-muted);
 }
+/* The dot stays 9px; the canvas-coloured ring is what separates it from the
+   card it sits on, so the port reads as a notch in the node's edge. */
 .react-flow__handle {
+  width: 9px;
+  height: 9px;
   background: var(--color-border-subtle);
   border: none;
-  width: 8px;
-  height: 8px;
+  box-shadow: 0 0 0 2px var(--color-canvas);
+}
+.react-flow__handle.connectingto,
+.react-flow__handle.valid {
+  background: var(--color-primary);
 }
 .react-flow__controls-button {
   background: var(--color-surface-raised);
@@ -241,6 +223,8 @@ body {
 .react-flow__minimap {
   background-color: var(--color-surface);
   border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-card);
+  overflow: hidden;
 }
 .react-flow__minimap-mask {
   fill: var(--color-canvas);

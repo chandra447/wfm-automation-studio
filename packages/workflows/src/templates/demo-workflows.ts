@@ -120,17 +120,17 @@ export const coverageRescueWorkflow: WorkflowDefinition = {
 };
 
 export const coverageRescueLayout: CanvasLayout = {
-  viewport: { x: 0, y: 0, zoom: 0.85 },
+  viewport: { x: 90, y: 0, zoom: 0.85 },
   positions: {
     when_shift_cancelled: { x: 0, y: 160 },
-    rank_candidates: { x: 300, y: 160 },
-    coverage_policy: { x: 600, y: 160 },
-    manager_approval: { x: 900, y: 40 },
-    operations_approval: { x: 900, y: 300 },
-    send_offers: { x: 1200, y: 160 },
-    cover_note: { x: 1500, y: 160 },
-    filled_end: { x: 1800, y: 160 },
-    stopped_end: { x: 1200, y: 420 },
+    rank_candidates: { x: 380, y: 160 },
+    coverage_policy: { x: 760, y: 160 },
+    manager_approval: { x: 1140, y: 40 },
+    operations_approval: { x: 1140, y: 300 },
+    send_offers: { x: 1520, y: 160 },
+    cover_note: { x: 1900, y: 160 },
+    filled_end: { x: 2280, y: 160 },
+    stopped_end: { x: 1520, y: 420 },
   },
 };
 
@@ -210,15 +210,15 @@ export const payrollExceptionWorkflow: WorkflowDefinition = {
 };
 
 export const payrollExceptionLayout: CanvasLayout = {
-  viewport: { x: 0, y: 0, zoom: 0.9 },
+  viewport: { x: 90, y: 0, zoom: 0.9 },
   positions: {
     when_exception_raised: { x: 0, y: 160 },
-    draft_adjustment: { x: 300, y: 160 },
-    award_check: { x: 600, y: 160 },
-    people_ops_approval: { x: 900, y: 160 },
-    apply_adjustment: { x: 1200, y: 160 },
-    resolved_end: { x: 1500, y: 160 },
-    manual_end: { x: 1200, y: 400 },
+    draft_adjustment: { x: 380, y: 160 },
+    award_check: { x: 760, y: 160 },
+    people_ops_approval: { x: 1140, y: 160 },
+    apply_adjustment: { x: 1520, y: 160 },
+    resolved_end: { x: 1900, y: 160 },
+    manual_end: { x: 1520, y: 400 },
   },
 };
 

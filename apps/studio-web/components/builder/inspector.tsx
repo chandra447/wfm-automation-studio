@@ -1,5 +1,6 @@
 'use client';
 
+import { Trash } from '@phosphor-icons/react';
 import { fieldsOf, toolById, type WorkflowDefinition, type WorkflowNode } from '@wfm/workflows';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,7 +9,8 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import type { OptionSources } from './control-options';
 import { FieldRenderer, FieldShell } from './field-renderer';
-import { accentVarByNodeType, withConfigKey } from './state';
+import { nodeIconByType } from './node-icons';
+import { accentVarByNodeType, nodeTypeLabel, withConfigKey } from './state';
 
 export interface InspectorProps {
   node: WorkflowNode | null;
@@ -22,7 +24,7 @@ export interface InspectorProps {
 export function Inspector({ node, definition, sources, onChange, onMetaChange, onDeleteNode }: InspectorProps) {
   if (!node) {
     return (
-      <aside className="flex w-80 shrink-0 flex-col gap-3 overflow-y-auto border-l border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-4">
+      <div className="flex h-full min-h-0 flex-1 flex-col gap-3 p-4">
         <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">Workflow</p>
         <FieldShell label="Description">
           <Textarea
@@ -36,69 +38,83 @@ export function Inspector({ node, definition, sources, onChange, onMetaChange, o
           <Label className="text-[11px] uppercase tracking-wide text-[var(--color-ink-faint)]">Enabled</Label>
           <Switch checked={definition.enabled} onCheckedChange={(enabled) => onMetaChange({ enabled })} />
         </div>
-        <p className="mt-4 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
+        <p className="mt-2 text-[11px] leading-relaxed text-[var(--color-ink-faint)]">
           Select a node to configure it. The engine runs the compiled graph from the trigger; every
           path to an action must pass a policy check, and anything that moves pay must pass a human
           approval first.
         </p>
-      </aside>
+      </div>
     );
   }
 
   const config: Record<string, unknown> = node.config;
   const accent = accentVarByNodeType[node.type];
+  const Icon = nodeIconByType[node.type];
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col gap-3 overflow-y-auto border-l border-[var(--color-border-subtle)] bg-[var(--color-surface)] p-4">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: accent }} />
-          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">
-            {node.type.replace(/_/g, ' ')}
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2.5 border-b border-[var(--color-border-subtle)] px-4 py-3">
+        <span
+          className="flex size-7 shrink-0 items-center justify-center rounded-md"
+          style={{
+            backgroundColor: `color-mix(in oklab, ${accent} 22%, transparent)`,
+            color: accent,
+          }}
+        >
+          <Icon className="size-4" weight="duotone" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">
+            {nodeTypeLabel(node.type)}
           </p>
+          <p className="truncate text-xs font-medium text-[var(--color-ink)]">{node.label}</p>
         </div>
         <Button
           variant="ghost"
-          size="xs"
+          size="icon-xs"
+          aria-label="Delete node"
+          title="Delete node"
           className="text-[var(--color-danger)]"
           onClick={() => onDeleteNode(node.id)}
         >
-          Delete node
+          <Trash className="size-3.5" />
         </Button>
       </div>
-      <FieldShell label="Label">
-        <Input
-          value={node.label}
-          maxLength={80}
-          className="h-8 text-xs"
-          onChange={(event) => onChange({ ...node, label: event.target.value }, `${node.id}:label`)}
-        />
-      </FieldShell>
-      <p className="font-mono text-[10px] text-[var(--color-ink-faint)]">id: {node.id}</p>
-      {fieldsOf(node.type).map((spec) => (
-        <FieldRenderer
-          key={spec.key}
-          spec={spec}
-          config={config}
-          fieldId={`${node.id}:${spec.key}`}
-          sources={sources}
-          onChange={(key, value, coalesceKey) =>
-            onChange(withConfigKey(node, key, value), `${node.id}:${coalesceKey}`)
-          }
-        />
-      ))}
-      {node.type === 'action' && (
-        <p className="text-[10px] leading-snug text-[var(--color-ink-faint)]">
-          Downstream inputs can read this output with {'{{nodes.'}
-          {node.id}
-          {'.output.<path>}}'}.
-        </p>
-      )}
-      {node.type === 'ai_decision' && (
-        <p className="text-[10px] leading-snug text-[var(--color-ink-faint)]">
-          Tools selected: {node.config.tools.map((toolId) => toolById(toolId)?.label ?? toolId).join(', ') || 'none'}
-        </p>
-      )}
-    </aside>
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
+        <FieldShell label="Label">
+          <Input
+            value={node.label}
+            maxLength={80}
+            className="h-8 text-xs"
+            onChange={(event) => onChange({ ...node, label: event.target.value }, `${node.id}:label`)}
+          />
+        </FieldShell>
+        <p className="truncate font-mono text-[10px] text-[var(--color-ink-faint)]">id: {node.id}</p>
+        {fieldsOf(node.type).map((spec) => (
+          <FieldRenderer
+            key={spec.key}
+            spec={spec}
+            config={config}
+            fieldId={`${node.id}:${spec.key}`}
+            sources={sources}
+            onChange={(key, value, coalesceKey) =>
+              onChange(withConfigKey(node, key, value), `${node.id}:${coalesceKey}`)
+            }
+          />
+        ))}
+        {node.type === 'action' && (
+          <p className="text-[10px] leading-snug text-[var(--color-ink-faint)]">
+            Downstream inputs can read this output with {'{{nodes.'}
+            {node.id}
+            {'.output.<path>}}'}.
+          </p>
+        )}
+        {node.type === 'ai_decision' && (
+          <p className="text-[10px] leading-snug text-[var(--color-ink-faint)]">
+            Tools selected: {node.config.tools.map((toolId) => toolById(toolId)?.label ?? toolId).join(', ') || 'none'}
+          </p>
+        )}
+      </div>
+    </div>
   );
 }

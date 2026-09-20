@@ -54,7 +54,7 @@ totals are compared against the `llm_calls` rows, not against a number the engin
 
 | | |
 |---|---|
-| ![overview](docs/screenshots/01-overview.webp) | ![canvas](docs/screenshots/02-builder-canvas.webp) |
+| ![overview](docs/screenshots/01-overview.webp) | ![canvas](docs/screenshots/13-builder-canvas-first.png) |
 | ![validation](docs/screenshots/03-builder-validation-blocks-publish.webp) | ![awaiting approval](docs/screenshots/05-run-awaiting-approval.webp) |
 | ![builder chat](docs/screenshots/11-builder-chat.png) | ![steering](docs/screenshots/12-run-steering.png) |
 
@@ -71,6 +71,7 @@ totals are compared against the `llm_calls` rows, not against a number the engin
 - **Extension by declaration.** A node kind is one file plus registration lines: its config schema, ports, capabilities, canvas fields, summary, and template slots in one place. The validator's platform invariants are written against capabilities, so a new kind inherits pay-safety rules without new validator code.
 - **Steering, not just approving.** A decision carries three things: the decision routes the graph, the reason goes to the audit trail, and the feedback becomes the next human message in the run. Downstream AI nodes decide with the approver's instruction in front of them, and `{{run.feedback}}` lets an artifact quote it. Steering is advice, never authority: it changes what a model prefers, not what a policy check permits.
 - **A workflow you can describe.** The builder has a chat panel beside the canvas. The model does not write a definition; it proposes a short list of operations from a closed set, and one applier validates them against the same kind declarations the canvas uses. The client sends its current graph every turn, so the agent reasons about what is on screen, including nodes you dragged, and the applier refuses an edit that would leave the graph invalid.
+- **A builder that gets out of the way.** The graph owns the screen. The component list, the agent conversation, the node inspector, the validation log, and the zoom control all float over it, and the components panel is closed until you ask for it. Each node card carries its kind's icon, name, one-line purpose, the fields that matter for that kind editable in place, and one labelled row per port with the handle on the card's edge.
 
 ## Architecture
 

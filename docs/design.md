@@ -179,6 +179,16 @@ node's output into the next node's input and are validated at save time.
 catalogues (commands, tools), the validator, and the compiler. Canvas geometry lives beside the
 definition as `layout` and never inside it.
 
+The builder itself is canvas-first: the graph owns the screen and everything else floats over it. A
+narrow rail on the left switches between the component list, the agent conversation, and the
+validation log; selecting a node opens its configuration panel on the right; the save state, the
+undo history, the publish action, and the zoom level sit in floating chrome at the edges. A node card
+carries its own identity rather than being a labelled box: the kind's icon and name, the one sentence
+that says what the kind is for, the fields that matter for that kind rendered inline and editable,
+and one labelled row per port with the handle on the card's edge. The same kind declarations drive
+all of it, so a kind added tomorrow gets a card, a palette row, and an inspector without a new
+component.
+
 ### 7.2.1 A node kind is one declaration
 
 Each kind lives in its own file under `packages/workflows/src/kinds/` and declares everything the
