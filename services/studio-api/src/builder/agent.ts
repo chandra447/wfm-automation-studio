@@ -1,6 +1,6 @@
 import type { BaseMessage } from '@langchain/core/messages';
 import { AIMessage, HumanMessage } from '@langchain/core/messages';
-import { createDeepAgent } from 'deepagents';
+import { createDeepAgent, createSummarizationMiddleware, StateBackend } from 'deepagents';
 import { z } from 'zod';
 import type { ModelDescriptor, TokenUsage } from '@wfm/contracts';
 import type { BuilderChatMessage, BuilderChatResponse, BuilderChatRequest } from '@wfm/workflows';
@@ -29,6 +29,42 @@ import { builderTools, type BuilderToolContext } from './tools.ts';
 const PROMPT_TURNS = 12;
 const TOKENS_PER_PRICE_UNIT = 1_000_000;
 const STEP_ARGUMENT_LIMIT = 120;
+
+/**
+ * A turn is a dozen model calls over a prompt that carries the kind catalogue,
+ * so a conversation that keeps its whole history re-sends all of it every time.
+ * These are the numbers a measured turn justified: one live turn cost 137k
+ * input tokens, most of it tool results the agent had already read.
+ */
+const SUMMARIZE_AFTER_TOKENS = 60_000;
+const KEEP_RECENT_MESSAGES = 20;
+const TRUNCATE_ARGUMENTS_AFTER_TOKENS = 30_000;
+const KEEP_ARGUMENTS_FOR_MESSAGES = 12;
+const MAX_TOOL_ARGUMENT_CHARS = 4_000;
+
+/**
+ * The summarization middleware, with thresholds rather than the harness's
+ * defaults: those are computed from a model profile, and our models are
+ * described by our own catalogue, not by a profile LangChain ships.
+ *
+ * The summary is written by the same model that is answering, so no second
+ * provider has to resolve, and the history it replaces is offloaded to the
+ * harness's own backend: state, not disk.
+ */
+function summarization() {
+  return createSummarizationMiddleware({
+    // The backend factory is typed as a union the harness resolves; state-backed
+    // is the arm that keeps history in agent state rather than on disk.
+    backend: () => new StateBackend(),
+    trigger: { type: 'tokens', value: SUMMARIZE_AFTER_TOKENS },
+    keep: { type: 'messages', value: KEEP_RECENT_MESSAGES },
+    truncateArgsSettings: {
+      trigger: { type: 'tokens', value: TRUNCATE_ARGUMENTS_AFTER_TOKENS },
+      keep: { type: 'messages', value: KEEP_ARGUMENTS_FOR_MESSAGES },
+      maxLength: MAX_TOOL_ARGUMENT_CHARS,
+    },
+  });
+}
 
 /** Where a builder call is filed in the accounting table: no run exists, so the workflow stands in. */
 const BUILDER_NODE_ID = 'builder_chat';
@@ -81,6 +117,7 @@ export class BuilderAgent {
       model: new BuilderChatModel({ provider }),
       tools: builderTools(context),
       systemPrompt: systemPrompt(this.#llm.catalogue.models()),
+      middleware: [summarization()],
     });
 
     const started = Date.now();
