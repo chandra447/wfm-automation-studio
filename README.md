@@ -2,91 +2,41 @@
 
 # WFM Automation Studio
 
-A working slice of an agentic workflow platform for workforce management. Two domain services publish events. Customers compose workflows over those events on a drag-and-drop canvas. AI reasons, deterministic policy constrains, a human decides, and the domain service performs the write.
+A working slice of an agentic workflow platform for workforce management. Two domain services publish
+events. Customers compose workflows over those events on a drag-and-drop canvas. AI reasons,
+deterministic policy constrains, a human decides, and the domain service performs the write.
 
-Built as a portfolio demo for a Senior Software Engineer (Automation & AI) role. It is inspired by the public Humanforce domain model and is not affiliated with Humanforce.
-
-## Verified, not asserted
-
-```
-scripts/verify.sh
-  1. Infrastructure        PASS postgres and redis are healthy
-  2. Migrations            PASS migrations applied
-  3. Seed                  PASS demo data seeded
-  4. Typecheck             PASS workspace typechecks
-  5. Services              PASS rostering-service is up
-                           PASS time-attendance-service is up
-                           PASS studio-api is up
-  6. End-to-end scenarios  PASS coverage rescue, payroll exception, idempotency, role checks
-  Result                   all properties verified
-```
-
-190 tests across 28 files (`bun test packages services apps/studio-web`), including one that throws an engine away mid-approval and finishes the run on a second instance, plus 8 end-to-end scenarios against the running stack.
-
-Feature-level proof, on top of the above:
-
-```
-scripts/verify-features.sh
-  1. Platform provider     PASS provider: the platform provider runs the workflow
-  2. Bring your own        PASS provider: a customer-supplied provider is used
-  3. Rules fallback        PASS provider: no provider configured falls back to the rules proposer
-  4. Model catalogue       PASS models: every offered model is declared in config/models.jsonl
-                           PASS models: a workflow naming an unknown model is rejected at save time
-  5. Token accounting      PASS tokens: run detail reports the provider usage
-                           PASS tokens: dashboard totals match the run detail
-  6. Dashboard             PASS dashboard: run counts match SQL aggregates
-  7. Run input and output  PASS run detail: the trigger payload is exposed as input
-                           PASS run detail: the delivered result is exposed as output
-  8. Workflow reuse        PASS reuse: a new workflow can be created from an existing one
-  9. References, artifacts PASS references: a run resolves {{input.payload.*}} and context paths
- 10. Node-kind extension   PASS extension: a new node kind is one file plus registration lines
- 11. Domain outcome        PASS outcome: the domain service reflects the workflow action
- 12. Steering             PASS steering: an approver message reaches the run and its artifacts
- 13. Builder chat          PASS builder: a chat turn edits the graph through validated operations
- 14. Agent node            PASS agent: a loop node runs the payroll workflow and proposes
- 15. Streaming chat        PASS builder: a turn streams its prose and its tool calls before it ends
-  Result                   all 22 feature properties verified
-```
-
-Step 12 approves a coverage run with a sentence the reviewer typed, then reads the artifact back and
-checks the approver's words are in it verbatim. Step 13 puts a real model behind the builder chat,
-asks for a change, and asserts the returned definition has the node it added, wired, with no
-validation errors. Step 14 swaps a workflow's single-shot decision for an agent node, publishes it,
-fires the real scenario, and reads back the tool trail and the one accounting row the loop filed.
-Step 15 opens the streaming route and times the frames: the tool calls arrive while the turn is still
-running, the prose arrives before the turn ends, and the closing frame carries the same response the
-blocking route returns.
-All three are checked against the running stack, not against a mock.
-
-Every provider check runs against the real vendor configured in `.env`. The run detail's token
-totals are compared against the `llm_calls` rows, not against a number the engine computed twice. The UI was exercised in a real browser, not just built: the canvas renders the compiled graph, deleting the approval node disables Publish with the offending node named, the approval card shows the rationale, evidence and pay impact, and approving resumes the run to `succeeded` with the shift moving to `offered`.
+Built as a portfolio demo for a Senior Software Engineer (Automation & AI) role. Inspired by the
+public Humanforce domain model, and not affiliated with Humanforce.
 
 | | |
 |---|---|
-| ![overview](docs/screenshots/01-overview.webp) | ![canvas](docs/screenshots/13-builder-canvas-first.png) |
-| ![builder chat](docs/screenshots/11-builder-chat.png) | ![agent focus](docs/screenshots/15-builder-focus.png) |
-| ![streaming chat with an open tool call](docs/screenshots/16-builder-chat-streaming.png) | ![provider settings](docs/screenshots/08-provider-settings.png) |
-| ![validation](docs/screenshots/03-builder-validation-blocks-publish.webp) | ![awaiting approval](docs/screenshots/05-run-awaiting-approval.webp) |
-| ![steering](docs/screenshots/12-run-steering.png) | ![dashboard](docs/screenshots/07-dashboard.png) |
+| `scripts/verify.sh` | infra, migrations, seed, typecheck, four services, 8 end-to-end scenarios. **All properties verified.** |
+| `scripts/verify-features.sh` | 22 feature properties against the real provider. **All verified.** |
+| `bun run test` | 190 tests across 28 files. |
+
+Those checks run against the running stack and a real model vendor, not a mock. An approver's typed
+sentence is read back out of the artifact it produced; a chat turn is asserted to have added and
+wired a node with no validation errors; an agent node's tool trail and its one accounting row are
+read from the database. **[What each one proves](docs/verification.md)**.
+
+| | |
+|---|---|
+| ![the canvas](docs/screenshots/13-builder-canvas-first.png) | ![a run waiting on a person](docs/screenshots/05-run-awaiting-approval.webp) |
+| ![the chat building a workflow](docs/screenshots/16-builder-chat-streaming.png) | ![the dashboard](docs/screenshots/07-dashboard.png) |
 
 ## What it demonstrates
 
-- **Customer-authored automation.** Workflows are data, not code. The canvas saves a definition, the engine compiles it into an executable graph at run time, and runs pin the version they started with.
+- **Workflows are data, not code.** The canvas saves a definition, the engine compiles it into an executable graph at run time, and a run pins the version it started with.
 - **Platform invariants over user freedom.** The validator refuses a definition where a pay-affecting action is reachable without a policy check and a human approval on every path.
-- **Human-in-the-loop that survives reality.** Approvals are measured in hours. The graph checkpoints into Postgres, so a restart does not lose a parked run, and a timeout escalates instead of auto-approving.
-- **Engineering the failure paths.** Transactional outbox, at-least-once delivery with dedupe, retries with backoff, dead letters, and idempotent commands. Every one of these is exercised by a test.
-- **Two AI nodes, one decision.** An `ai_decision` node fetches the read-only tools it declared and makes exactly one model call, so its cost and its prompt are derivable from the saved definition. An `agent` node is the loop: the model chooses which of its declared tools to call, up to a step budget, and the run records the trail of what it looked at. Both return the same structured proposal and pass the same policy and approval gates, and the choice is visible per node rather than imposed on every workflow.
-- **Bring your own model.** A tenant picks the platform's endpoint, their own OpenAI-compatible base URL, or Anthropic, with a key stored encrypted and never read back. Only models declared in `config/models.jsonl` are offered, and a workflow naming anything else is refused at save time.
-- **Cost you can check.** Every call records the vendor's own token counts, so the run detail, the run list, and the dashboard all show the same numbers, priced from the catalogue.
-- **Data in the builder.** The canvas lists the trigger event's fields with sample values and inserts `{{...}}` references into prompts, action inputs, and artifact bodies. References are validated at save time against the event's published schema.
-- **Artifacts.** A run can render a document from its own data and attach it, which is what the run detail shows as its delivered output.
-- **Extension by declaration.** A node kind is one file plus registration lines: its config schema, ports, capabilities, canvas fields, summary, and template slots in one place. The validator's platform invariants are written against capabilities, so a new kind inherits pay-safety rules without new validator code.
-- **Steering, not just approving.** A decision carries three things: the decision routes the graph, the reason goes to the audit trail, and the feedback becomes the next human message in the run. Downstream AI nodes decide with the approver's instruction in front of them, and `{{run.feedback}}` lets an artifact quote it. Steering is advice, never authority: it changes what a model prefers, not what a policy check permits.
-- **A workflow you can describe.** The builder has a chat panel beside the canvas, and the agent behind it works the way an engineer would: it has tools to read the graph, read the node-kind catalogue with each kind's legal configuration, read the trigger's data, add, update, move, connect and disconnect nodes, and point the canvas at what it means. It is a Deep Agents harness with a real tool loop, so a turn that adds a node reads the graph back to check its own work before answering. The model still does not write a definition: the write tools collect operations from a closed set, and one applier validates them against the same kind declarations the canvas uses. A bad call is refused with the legal alternatives named, an unfinished graph is reported as not valid yet, and the client sends its current graph every turn, so the agent reasons about what is on screen, including nodes you dragged.
-- **An agent whose work you can see, while it works.** The turn streams: prose as the model writes it, and each tool call the moment it is asked for and again when it answers, with the arguments and the result. The canvas reacts to a focus request mid-turn, so the graph is already framed on the nodes under discussion before the reply finishes. The transport is ours, SSE over `fetch`, the same pattern the run stream uses; the chat components are AI Elements, used as presentation only.
-- **A trail you can open.** A finished turn keeps the same rows it showed while it ran: each call with its name, its state, and the arguments and result a click away. Past four calls the trail becomes one group you can open, so a fourteen-call turn does not push its own answer off the panel. When a turn asks the canvas to point at nodes, the canvas frames them and rings them without selecting them, so the inspector stays shut and your next click takes the canvas back. Past four tool calls the trail collapses to a count, because a fourteen-call turn would otherwise push its own answer off the panel.
-- **A conversation that stays inside its budget.** The turn above made 14 model calls and cost 137k input tokens, most of them tool results the agent had already read. The agent summarizes its own history once the conversation passes a token threshold and keeps the recent exchanges, so the twelfth turn does not pay for the first. Summary calls are ordinary model calls: they land in the same accounting table as everything else.
-- **A builder that gets out of the way.** The graph owns the screen. The component list, the agent conversation, the node inspector, the validation log, and the zoom control all float over it, and the components panel is closed until you ask for it. Each node card carries its kind's icon, name, one-line purpose, the fields that matter for that kind editable in place, and one labelled row per port with the handle on the card's edge.
+- **Human-in-the-loop that survives reality.** Approvals are measured in hours, the graph checkpoints into Postgres, a restart does not lose a parked run, and a timeout escalates instead of auto-approving.
+- **Two AI nodes, one decision.** `ai_decision` makes exactly one model call, so its cost and prompt are derivable from the saved definition. `agent` is the loop, with a step budget and a recorded trail. Both return the same structured proposal and pass the same gates.
+- **A workflow you can describe, and watch it work.** The chat edits the graph through validated operations, never by writing a definition, and streams its prose and its tool calls while it works.
+- **Steering, not just approving.** A decision carries three things: the decision routes the graph, the reason goes to the audit trail, and the feedback becomes the next human message in the run. It changes what a model prefers, never what a policy check permits.
+- **Bring your own model.** Platform endpoint, the customer's own OpenAI-compatible base URL, or Anthropic, with the key stored encrypted and never read back. Only models declared in the catalogue are offered.
+- **Cost you can check.** Every call records the vendor's own token counts, so the run detail, the run list and the dashboard show the same numbers, priced from the catalogue.
+- **Extension by declaration.** A node kind is one file plus registration lines. The validator's invariants are written against capabilities, so a new kind inherits pay-safety rules without new validator code.
+- **Engineering the failure paths.** Transactional outbox, at-least-once delivery with dedupe, retries with backoff, dead letters, idempotent commands. Each is exercised by a test.
 
 ## Stack
 
@@ -95,12 +45,12 @@ totals are compared against the `llm_calls` rows, not against a number the engin
 | Runtime | **Bun** | One binary runs the services, the package manager, the test runner and the bundler, and it ships its own SQL and Redis clients, so the tree carries fewer drivers. |
 | HTTP | **Elysia** | Routes declare their schemas once, which gives validation at the edge and a typed client for free: the browser imports the server's route types through Eden instead of a hand-written API layer. |
 | UI | **Next.js** | The canvas is a stateful client tree inside a server-rendered shell, and the App Router supplies routing, fonts and bundling without a second build pipeline. |
-| Canvas | **React Flow** | Nodes, ports, edges, selection and viewport maths are the entire problem on that screen, and it is the library the design community already reads. |
+| Canvas | **React Flow** | Nodes, ports, edges, selection and viewport maths are the entire problem on that screen. |
 | Queue | **BullMQ** | Retries with exponential backoff, delayed jobs and concurrency out of the box, which is exactly what run execution and approval timeouts need. |
 | Database | **Postgres** | One transactional store per service, so a domain write and its outbox rows commit together, with JSONB for the graph and the tables the LangGraph checkpointer needs. |
-| Bus | **Redis** | Redis Streams with consumer groups gives at-least-once delivery and a dead-letter path locally, behind a port that Azure Event Hubs satisfies in production. |
+| Bus | **Redis** | Redis Streams with consumer groups gives at-least-once delivery and a dead-letter path locally, behind a port Azure Event Hubs satisfies in production. |
 | Graph | **LangGraph.js** | A compiled state machine with a real interrupt, so a run can park on an approval for hours and resume from a checkpoint instead of holding a process open. |
-| Model | **LangChain + Deep Agents** | The builder agent needs a tool loop with middleware; the adapter underneath is ours, so no vendor SDK reaches the domain and a tenant can bring its own endpoint. |
+| Model | **LangChain + Deep Agents** | The builder agent needs a tool loop with middleware; the adapter underneath is ours, so no vendor SDK reaches the domain. |
 
 ## Architecture
 
@@ -141,86 +91,58 @@ bun run seed              # demo tenant, staff, shifts, timesheet, workflows
 bun run dev               # services, engine, worker, and the studio at :4104
 ```
 
-The platform provider reads `PLATFORM_LLM_BASE_URL`, `PLATFORM_LLM_API_KEY`, and `PLATFORM_LLM_MODEL`
+The platform provider reads `PLATFORM_LLM_BASE_URL`, `PLATFORM_LLM_API_KEY` and `PLATFORM_LLM_MODEL`
 from `.env`; `LLM_CONFIG_SECRET` encrypts any customer-supplied key; `config/models.jsonl` is the
 allow-list of models the studio offers.
 
-Open http://127.0.0.1:4104.
+Open <http://127.0.0.1:4104> and fire one of the two demo scenarios from the dashboard: a cancelled
+shift needs cover, or a clock-out with no break taken raises a pay-affecting exception. Both run the
+real domain services, and both park on a human before anything moves pay.
 
-To prove the whole thing without clicking, run:
+To prove the whole thing without clicking:
 
 ```bash
 scripts/verify.sh            # infra, migrations, seed, typecheck, services, scenarios
 scripts/verify-features.sh   # provider, catalogue, tokens, dashboard, reuse, artifacts, extension
 ```
 
-`verify.sh` brings up infra, migrates, seeds, boots the four processes, runs the end-to-end
-scenarios, and exits non-zero if any property fails. `verify-features.sh` assumes the stack is up and
-checks the feature set above against it.
+## Where to start reading
 
-## The two demo scenarios
+| | |
+|---|---|
+| **[docs/design.md](docs/design.md)** | The design: the event contract, the DSL, the platform invariants, the engine, the provider boundary, the builder. 13 sections, and the reasoning behind each. |
+| **[docs/adr/](docs/adr/)** | Fifteen decisions with their context and what each cost, including the alternatives that were rejected. |
+| **[packages/workflows/src/kinds/](packages/workflows/src/kinds/)** | The extension claim, in eight small files. One is enough to see how a node kind declares itself. |
+| **[services/studio-api/src/engine/nodes/](services/studio-api/src/engine/nodes/)** | How a node executes, including the policy evaluator and the two AI nodes. |
+| **[apps/studio-web/components/builder/canvas.tsx](apps/studio-web/components/builder/canvas.tsx)** | The canvas: React Flow state, the DSL derived on save, undo, autosave, and the focus ring. |
+| **[decisions.tsv](decisions.tsv)** | The running decision log, one row per call made along the way. |
 
-**Coverage rescue.** A sick call cancels a registered-nurse shift 7.5 hours before it starts. The engine resolves the shift, ranks eligible staff by qualification, rest rule, availability, and cost, checks policy, and parks the run for a roster manager. On approval it offers the shift with an idempotency key. A replayed approval cannot double-apply.
+## Documentation
 
-**Payroll-safe timesheet exception.** A nurse clocks out of an 8.25 hour shift without taking the unpaid break the award requires, and crosses into overtime. The engine reads the timesheet and the award rule, drafts the adjustment, computes the pay impact, and waits for People Ops. On approval the adjustment is applied and the audit row names the approver.
-
-Both are driven by the services, not by a test hook. The simulator calls the same endpoints a real client would.
+| Doc | What is in it |
+|---|---|
+| [docs/design.md](docs/design.md) | The design brief, including the [non-goals](docs/design.md#2-non-goals), the [testing strategy](docs/design.md#10-testing-strategy), the [production mapping](docs/design.md#11-production-mapping-what-changes-what-doesnt) and the [known trade-offs](docs/design.md#13-known-trade-offs) |
+| [docs/verification.md](docs/verification.md) | What each check proves, and the traps in running them |
+| [docs/adr/](docs/adr/) | Fifteen architecture decisions |
+| [docs/jd-mapping.md](docs/jd-mapping.md) | Each job-description line mapped to the artifact that answers it |
+| [docs/demo-script.md](docs/demo-script.md) | The recording script: beats, the prompts to paste, expected results, timings |
+| [docs/loom-script.md](docs/loom-script.md) | The short screen-recording script |
+| [AGENTS.md](AGENTS.md) | How to work in this repo: house rules, the ripwire workflow, the traps |
+| [decisions.tsv](decisions.tsv) | The decision log |
 
 ## Repo map
 
 | Path | What it is |
 |---|---|
-| `AGENTS.md` | How to work in this repo: the layout, the house rules, ripwire for planning and changes, the verification gates, and the traps |
-| `docs/design.md` | The design brief. Domain model, event catalogue, run lifecycle, reliability model |
-| `docs/adr/` | Fifteen decisions with their trade-offs |
-| `docs/jd-mapping.md` | Each requirement from the job description mapped to the artifact that answers it |
-| `docs/demo-script.md` | The recording script: beats, the prompts to paste, expected results, timings |
-| `docs/loom-script.md` | The short screen-recording script |
-| `packages/contracts` | Event envelope, event registry, API DTOs, actor context, condition DSL |
-| `packages/workflows` | Node-kind registry, reference grammar and resolver, validator, compiler, demo templates |
-| `packages/eventbus` | Backbone port, Redis Streams binding, in-memory binding for tests |
-| `packages/outbox` | Transactional outbox with a publisher that claims rows safely |
-| `services/rostering-service` | Shifts, candidates, offers, swaps |
-| `services/time-attendance-service` | Clocking, breaks, timesheets, award maths, exceptions |
-| `services/studio-api` | Engine: router, orchestrator, node executors, approvals, workflow CRUD, model providers, artifacts, dashboard |
-| `config/models.jsonl` | The models the studio offers, one per line, with prices |
-| `apps/studio-web` | Next.js studio: dashboard, canvas, triggers, runs, approvals, provider settings |
-| `tests/e2e` | The two scenarios plus idempotency and authorisation checks |
+| `packages/` | contracts, workflows (DSL, kinds, validator, compiler), eventbus, outbox, observability, testkit |
+| `services/` | rostering-service, time-attendance-service, studio-api (engine, builder, providers) |
+| `apps/studio-web/` | The studio: dashboard, canvas, chat, triggers, runs, approvals, settings |
+| `tests/e2e/` | The two scenarios, plus idempotency and authorisation checks |
+| `scripts/` | seed, dev, verify, verify-features |
 
-## How it is built
+## What this is not
 
-- **Types.** Strict TypeScript, no `any`, external data parsed at boundaries with zod.
-- **Data.** Postgres with Drizzle ORM over Bun's built-in SQL client, one database per service. A domain write and its outbox rows share a transaction, which is what makes at-least-once publication safe.
-- **Events.** One envelope shape everywhere, versioned, tenant-partitioned, carrying correlation, causation, and trace context. Payloads carry identity, not truth, so consumers re-read current state. This mirrors the skinny webhooks Humanforce HR already emits. The Redis Streams binding runs on Bun's own Redis client, so our packages carry no Redis driver; BullMQ brings its own, which is a property of that library rather than a choice here.
-- **Execution.** BullMQ owns retries, backoff, delayed approval timeouts, and concurrency. LangGraph owns the graph and the interrupt. Our orchestrator owns the run record, the audit, and the timeline.
-- **AI.** Optional and pluggable. `LlmProvider` is an abstract class over raw HTTP with two implementations (OpenAI-compatible, Anthropic); the deterministic rules proposer is the fallback whenever a tenant has no provider. Whichever ran, policy and human authority stay in the path, and the run records which model produced the proposal.
-
-## Testing
-
-```bash
-bun test packages        # contracts, node kinds, references, validator, compiler, templates
-bun test services        # award maths, ranking, idempotency, routing, approvals, providers, dashboard
-bun test tests/e2e       # both scenarios against the running stack
-bun run typecheck
-```
-
-The end-to-end scenarios call the configured model, so a reasoning model makes them slow. Point
-`PLATFORM_LLM_MODEL` at `deepseek/deepseek-chat-v3.1` for a fast run, or set a tenant to `none` to
-exercise the rules proposer.
-
-The end-to-end suite asserts observable state only: run rows, approval records, timeline events, and the domain services' own API responses.
-
-## Production mapping
-
-| Demo | Production |
-|---|---|
-| Redis Streams consumer groups | Azure Event Hubs consumer groups, same envelope, same port |
-| BullMQ on local Redis | BullMQ on Azure Cache for Redis |
-| Postgres checkpointer, one node | Postgres Flexible Server, checkpointer tables partitioned by tenant |
-| Actor headers | Entra ID plus tenant-scoped RBAC |
-| Secrets in `.env` | Key Vault with managed identity |
-| pino to stdout | OTel SDK to Azure Monitor, same traceparent chain |
-
-## What is deliberately missing
-
-No knowledge or retrieval service, no Entra ID, no Azure deployment, no row-level security, no multi-region work. Each is named with its reason in `docs/jd-mapping.md`.
+No knowledge or retrieval service, no Entra ID, no Azure deployment, no row-level security, no
+multi-region work, and demo-grade authentication. Each is named with its reason in
+[docs/jd-mapping.md](docs/jd-mapping.md), and the non-goals are argued in
+[docs/design.md](docs/design.md#2-non-goals).
