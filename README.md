@@ -63,7 +63,7 @@ totals are compared against the `llm_calls` rows, not against a number the engin
 |---|---|
 | ![overview](docs/screenshots/01-overview.webp) | ![canvas](docs/screenshots/13-builder-canvas-first.png) |
 | ![builder chat](docs/screenshots/11-builder-chat.png) | ![agent focus](docs/screenshots/15-builder-focus.png) |
-| ![streaming chat](docs/screenshots/16-builder-chat-streaming.png) | ![agent focus](docs/screenshots/15-builder-focus.png) |
+| ![streaming chat with an open tool call](docs/screenshots/16-builder-chat-streaming.png) | ![provider settings](docs/screenshots/08-provider-settings.png) |
 | ![validation](docs/screenshots/03-builder-validation-blocks-publish.webp) | ![awaiting approval](docs/screenshots/05-run-awaiting-approval.webp) |
 | ![steering](docs/screenshots/12-run-steering.png) | ![dashboard](docs/screenshots/07-dashboard.png) |
 
