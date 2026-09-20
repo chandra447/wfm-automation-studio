@@ -14,7 +14,7 @@ import {
 import { appendAudit, appendRunEvent, countAction, getDecidedApproval } from "../run-store.ts";
 import { publishActionExecuted } from '../events.ts';
 import type { RunScope, RunStateFields } from '../state.ts';
-import type { ExecutorDeps } from './context.ts';
+import { templateScopeOf, type ExecutorDeps } from './context.ts';
 
 export interface ActionOutcome {
   executed: boolean;
@@ -41,13 +41,7 @@ export async function runActionNode(
   const command = commandById(node.config.command);
   if (!command) throw new Error(`unknown command "${node.config.command}" in action node ${node.id}`);
 
-  const resolved = resolveTemplateMap(node.config.input, {
-    input: state.event,
-    nodes: Object.fromEntries(
-      Object.entries(state.nodes).map(([id, value]) => [id, { output: value?.output }]),
-    ),
-    now: new Date(),
-  });
+  const resolved = resolveTemplateMap(node.config.input, templateScopeOf(scope, state));
 
   const outcome = scope.dryRun ? dryRunOutcome(command, node.id) : await executeCommand(command, resolved, scope, deps, node.id);
   if (outcome.executed) {

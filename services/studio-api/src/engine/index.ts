@@ -30,6 +30,9 @@ import * as schema from '../db/schema.ts';
 import { ApprovalService } from './approvals.ts';
 import { connectStudioDb, ensureStudioTables } from './db.ts';
 import type {
+  ArtifactDetail,
+  CreateFromRequest,
+  DataCatalogue,
   EngineService,
   RunFilter,
   SaveWorkflowRequest,
@@ -51,13 +54,19 @@ import {
   getPendingApproval,
   getRunEvents,
   getRunRow,
+  payloadOf,
   toApproval,
   toRunEvent,
+  toRunInput,
+  toRunOutput,
   toRunSummary,
   type RunDb,
   type RunRow,
 } from './run-store.ts';
-import { createProposer, type Proposer } from './nodes/proposers.ts';
+import { ResolvingProposer, type Proposer } from './nodes/proposers.ts';
+import { createLlmServices, type LlmServices } from '../llm/index.ts';
+import { getArtifact, listArtifactsForRun } from './artifact-store.ts';
+import { buildDataCatalogue } from './data-catalogue.ts';
 
 /**
  * Engine composition root: builds every binding (Drizzle over Postgres, the
@@ -77,6 +86,8 @@ export interface EngineContext {
   queue: QueueGateway & { close?: () => Promise<void> };
   logger: Logger;
   dryRun: boolean;
+  /** Provider settings, the model catalogue, and token accounting. */
+  llm: LlmServices;
   /** Boot hook; the env wiring runs `PostgresSaver.setup()` here. */
   prepare?: () => Promise<void>;
   /** Connections the engine created and must release on stop. */
@@ -128,7 +139,7 @@ export function createEngine(context: EngineContext): Wiring {
  * (set up once at boot so `interrupt()` survives a process restart), and the
  * two domain clients.
  */
-export function createEngineFromEnv(env: NodeJS.ProcessEnv = process.env): EngineService {
+export async function createEngineFromEnv(env: NodeJS.ProcessEnv = process.env): Promise<EngineService> {
   const databaseUrl = env.STUDIO_DATABASE_URL;
   if (!databaseUrl) throw new Error('STUDIO_DATABASE_URL is required');
   const redisUrl = env.REDIS_URL;
@@ -145,11 +156,6 @@ export function createEngineFromEnv(env: NodeJS.ProcessEnv = process.env): Engin
     ...(env.ROSTERING_BASE_URL ? { ROSTERING_BASE_URL: env.ROSTERING_BASE_URL } : {}),
     ...(env.TIME_ATTENDANCE_BASE_URL ? { TIME_ATTENDANCE_BASE_URL: env.TIME_ATTENDANCE_BASE_URL } : {}),
   });
-  const proposer = createProposer({
-    OPENAI_API_KEY: env.OPENAI_API_KEY ?? '',
-    ...(env.OPENAI_MODEL ? { OPENAI_MODEL: env.OPENAI_MODEL } : {}),
-    ...(env.LLM_TIMEOUT_MS ? { LLM_TIMEOUT_MS: env.LLM_TIMEOUT_MS } : {}),
-  });
 
   const pool = new Pool({ connectionString: databaseUrl });
   const checkpointer = new PostgresSaver(pool);
@@ -165,6 +171,9 @@ export function createEngineFromEnv(env: NodeJS.ProcessEnv = process.env): Engin
     },
   });
 
+  const llm = await createLlmServices(studioDb.db, env);
+  const proposer = new ResolvingProposer({ settings: llm.settings, accounting: llm.accounting });
+
   const { engine, orchestrator } = createEngine({
     sql: studioDb.sql,
     db: studioDb.db,
@@ -175,6 +184,7 @@ export function createEngineFromEnv(env: NodeJS.ProcessEnv = process.env): Engin
     queue,
     logger,
     dryRun: env.STUDIO_DRY_RUN === 'true',
+    llm,
     prepare: () => checkpointer.setup(),
     dispose: async () => {
       await studioDb.close();
@@ -230,7 +240,7 @@ class Engine implements EngineService {
   }
 
   async createWorkflow(actor: ActorContext, request: SaveWorkflowRequest): Promise<WorkflowMutationResult> {
-    const diagnostics = assertValid(request.definition);
+    const diagnostics = this.#assertValid(request.definition);
     const workflowId = crypto.randomUUID();
     await this.#db.insert(schema.workflows).values({
       workflowId,
@@ -263,7 +273,7 @@ class Engine implements EngineService {
 
   async saveDraft(actor: ActorContext, workflowId: string, request: SaveWorkflowRequest): Promise<WorkflowMutationResult> {
     const row = await this.#workflowRow(actor, workflowId);
-    const diagnostics = assertValid(request.definition);
+    const diagnostics = this.#assertValid(request.definition);
     const versionNumber = row.draftVersionNumber;
     await this.#db
       .insert(schema.workflowVersions)
@@ -309,7 +319,7 @@ class Engine implements EngineService {
     if (row.publishedVersionNumber === versionNumber && draft.status === 'published') {
       return { workflowId, versionNumber, status: 'published', diagnostics: draft.diagnostics };
     }
-    const diagnostics = assertValid(draft.definition);
+    const diagnostics = this.#assertValid(draft.definition);
     await this.#db
       .update(schema.workflowVersions)
       .set({ status: 'published' })
@@ -368,7 +378,10 @@ class Engine implements EngineService {
         : [];
     const pendingByRun: Record<string, string> = {};
     for (const pendingApproval of pending) pendingByRun[pendingApproval.runId] = pendingApproval.approvalId;
-    return rows.map((row) => toRunSummary(row.run, row.versionNumber, pendingByRun[row.run.runId] ?? null));
+    const tokensByRun = await this.#context.llm.accounting.tokensForRuns(rows.map((row) => row.run.runId));
+    return rows.map((row) =>
+      toRunSummary(row.run, row.versionNumber, pendingByRun[row.run.runId] ?? null, tokensByRun[row.run.runId]),
+    );
   }
 
   async getRun(actor: ActorContext, runId: string): Promise<RunDetail> {
@@ -380,10 +393,20 @@ class Engine implements EngineService {
       .limit(1);
     const events = await getRunEvents(this.#db, runId);
     const approval = (await getPendingApproval(this.#db, runId)) ?? (await getDecidedApproval(this.#db, runId));
+    const versionNumber = versionRows[0]?.versionNumber ?? 1;
+    const [tokens, artifacts] = await Promise.all([
+      this.#context.llm.accounting.tokensForRun(runId),
+      listArtifactsForRun(this.#db, actor.tenantId, runId),
+    ]);
+    // The trigger is stored on the run's own first event, so the detail view
+    // shows exactly what the workflow read rather than a re-read of the event.
+    const received = events.find((event) => event.kind === 'event_received');
     return {
-      run: toRunSummary(run, versionRows[0]?.versionNumber ?? 1, approval?.status === 'pending' ? approval.approvalId : null),
+      run: toRunSummary(run, versionNumber, approval?.status === 'pending' ? approval.approvalId : null, tokens),
       events: events.map(toRunEvent),
       approval: approval ? toApproval(approval, run.workflowName) : null,
+      input: toRunInput(run, versionNumber, payloadOf(received?.data)),
+      output: toRunOutput(run, artifacts),
     };
   }
 
@@ -415,6 +438,71 @@ class Engine implements EngineService {
 
   async simulate(actor: ActorContext, scenario: SimulatorScenario): Promise<SimulatorResponse> {
     return this.#simulator.run(actor, scenario);
+  }
+
+  /**
+   * The pure validator plus the platform checks that need data the DSL package
+   * cannot see. The model catalogue is the allow-list for ai_decision nodes, so
+   * a workflow naming a model the catalogue does not declare is refused here
+   * rather than failing mid-run.
+   */
+  #assertValid(definition: WorkflowDefinition): Diagnostic[] {
+    const diagnostics = [...validateWorkflow(definition), ...this.#modelDiagnostics(definition)];
+    const errors = validationErrors(diagnostics);
+    if (errors.length > 0) throw new WorkflowValidationError(errors);
+    return diagnostics;
+  }
+
+  #modelDiagnostics(definition: WorkflowDefinition): Diagnostic[] {
+    const declared = new Set(this.#context.llm.catalogue.models().map((model) => model.id));
+    return definition.nodes.flatMap((node) => {
+      if (node.type !== 'ai_decision') return [];
+      const model = node.config.model;
+      if (model === undefined || declared.has(model)) return [];
+      return [
+        {
+          severity: 'error' as const,
+          code: 'UNKNOWN_MODEL',
+          message: `Model "${model}" is not declared in config/models.jsonl. Add a line there to offer it, or choose one the catalogue lists.`,
+          nodeId: node.id,
+        },
+      ];
+    });
+  }
+
+  async getArtifact(actor: ActorContext, artifactId: string): Promise<ArtifactDetail> {
+    const artifact = await getArtifact(this.#db, actor.tenantId, artifactId);
+    if (artifact === null) throw new Error(`artifact ${artifactId} not found`);
+    return artifact;
+  }
+
+  async dataCatalogue(_actor: ActorContext, eventType: string): Promise<DataCatalogue> {
+    const known = this.listTriggers().some((trigger) => trigger.eventType === eventType);
+    if (!known) throw new Error(`trigger event ${eventType} not found`);
+    return buildDataCatalogue(eventType);
+  }
+
+  /**
+   * Creating from an existing workflow copies its definition and layout into a
+   * new workflow. The source is read, never written, and the copy is an
+   * ordinary draft from here on.
+   */
+  async createWorkflowFrom(actor: ActorContext, request: CreateFromRequest): Promise<WorkflowMutationResult> {
+    const source = await this.getWorkflow(actor, request.fromWorkflowId);
+    const version =
+      request.versionNumber === undefined
+        ? source.versions.at(-1)
+        : source.versions.find((candidate) => candidate.versionNumber === request.versionNumber);
+    if (version === undefined) {
+      throw new Error(`version ${String(request.versionNumber)} not found on workflow ${request.fromWorkflowId}`);
+    }
+    return this.createWorkflow(actor, {
+      name: request.name,
+      description: request.description ?? source.workflow.description,
+      enabled: true,
+      definition: { ...version.definition, name: request.name },
+      layout: version.layout,
+    });
   }
 
   async start(): Promise<void> {
@@ -477,12 +565,7 @@ function workflowVersionOf(row: WorkflowVersionRow): WorkflowVersion {
   };
 }
 
-function assertValid(definition: WorkflowDefinition): Diagnostic[] {
-  const diagnostics = validateWorkflow(definition);
-  const errors = validationErrors(diagnostics);
-  if (errors.length > 0) throw new WorkflowValidationError(errors);
-  return diagnostics;
-}
+
 
 async function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return;

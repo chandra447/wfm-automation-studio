@@ -80,6 +80,26 @@ export const coverageRescueWorkflow: WorkflowDefinition = {
         },
       },
     },
+    {
+      id: 'cover_note',
+      type: 'artifact',
+      label: 'Cover note',
+      config: {
+        name: 'Coverage note',
+        format: 'markdown',
+        body: [
+          '# Coverage for {{run.workflowName}}',
+          '',
+          'Shift `{{input.payload.shiftId}}` was left uncovered and has been offered to the best eligible candidate.',
+          '',
+          '- Top candidate: `{{nodes.rank_candidates.output.topCandidateId}}`',
+          '- Cost delta against baseline: {{nodes.rank_candidates.output.costDeltaCents}} cents',
+          '- Decided by: {{nodes.manager_approval.output.decidedBy}}',
+          '',
+          'Generated from run data at {{now}}.',
+        ].join('\n'),
+      },
+    },
     { id: 'filled_end', type: 'end', label: 'Offers sent', config: { outcome: 'completed' } },
     { id: 'stopped_end', type: 'end', label: 'Left for manual cover', config: { outcome: 'needs_attention' } },
   ],
@@ -92,7 +112,8 @@ export const coverageRescueWorkflow: WorkflowDefinition = {
     { from: 'manager_approval', to: 'stopped_end', port: 'rejected' },
     { from: 'operations_approval', to: 'send_offers', port: 'approved' },
     { from: 'operations_approval', to: 'stopped_end', port: 'rejected' },
-    { from: 'send_offers', to: 'filled_end', port: 'always' },
+    { from: 'send_offers', to: 'cover_note', port: 'always' },
+    { from: 'cover_note', to: 'filled_end', port: 'always' },
   ],
 };
 
@@ -105,7 +126,8 @@ export const coverageRescueLayout: CanvasLayout = {
     manager_approval: { x: 900, y: 40 },
     operations_approval: { x: 900, y: 300 },
     send_offers: { x: 1200, y: 160 },
-    filled_end: { x: 1500, y: 160 },
+    cover_note: { x: 1500, y: 160 },
+    filled_end: { x: 1800, y: 160 },
     stopped_end: { x: 1200, y: 420 },
   },
 };

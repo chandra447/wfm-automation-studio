@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { WorkflowDefinition } from '../src/dsl.ts';
 import { compileWorkflow } from '../src/compile.ts';
-import { validateWorkflow, validationErrors, defaultValidationContext } from '../src/validate.ts';
+import { validateWorkflow, validationErrors, defaultValidationContext } from '../src/index.ts';
 import { coverageRescueWorkflow, payrollExceptionWorkflow } from '../src/templates/demo-workflows.ts';
 
 function codes(definition: WorkflowDefinition): string[] {

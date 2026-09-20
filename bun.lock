@@ -85,6 +85,7 @@
       "dependencies": {
         "@wfm/contracts": "workspace:*",
         "@wfm/eventbus": "workspace:*",
+        "zod": "^4.1.11",
       },
     },
     "packages/workflows": {
@@ -121,7 +122,6 @@
         "@langchain/core": "^1.0.1",
         "@langchain/langgraph": "^1.0.1",
         "@langchain/langgraph-checkpoint-postgres": "^1.0.0",
-        "@langchain/openai": "^1.0.0",
         "@wfm/contracts": "workspace:*",
         "@wfm/eventbus": "workspace:*",
         "@wfm/observability": "workspace:*",
@@ -309,8 +309,6 @@
     "@langchain/langgraph-checkpoint-postgres": ["@langchain/langgraph-checkpoint-postgres@1.0.5", "", { "dependencies": { "pg": "^8.12.0" }, "peerDependencies": { "@langchain/core": "^1.1.44", "@langchain/langgraph-checkpoint": "^1.1.4" } }, "sha512-kCpp9pOidYDexhOvpWN4Z6G4npr4+OH8Qe/2oo38NLbRa+AzMcuZDiEI8y9bh4v5fcMy/dhlJClCSQzl86ddUw=="],
 
     "@langchain/langgraph-sdk": ["@langchain/langgraph-sdk@1.11.1", "", { "dependencies": { "@langchain/protocol": "^0.0.19", "@types/json-schema": "^7.0.15", "p-queue": "^9.0.1", "p-retry": "^7.1.1" }, "peerDependencies": { "@langchain/core": "^1.1.48", "react": "^18 || ^19", "react-dom": "^18 || ^19" }, "optionalPeers": ["react", "react-dom"] }, "sha512-g29J8FH684kVRCQW+CaO5OrR+hV2IJwIEuBKdPFwRgm05RZXEEsDSx0/1FBpQQJRzsVElmLBVSHuGGpwdxGnYg=="],
-
-    "@langchain/openai": ["@langchain/openai@1.5.13", "", { "dependencies": { "js-tiktoken": "^1.0.12", "openai": "^7.10.0", "zod": "^3.25.76 || ^4" }, "peerDependencies": { "@langchain/core": "^1.2.11" } }, "sha512-SA1QWNgM/p8xhdwU82CJ7OofhHEExpAaIwJ7j9ELIyVW795Mn0jDRQO/5yChawLcPhuLkeL+jMesi0FnXbImSg=="],
 
     "@langchain/protocol": ["@langchain/protocol@0.0.19", "", {}, "sha512-9hKcRrH7cBX6gfutdfXPoft1OCchHe4FEpALoDJMl5Qu+n/YG5ynZmyu8+8cxORlPwHBoKTxggvXz+76M1yX1Q=="],
 

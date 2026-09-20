@@ -2,7 +2,7 @@ import { createEngineFromEnv } from './engine/index.ts';
 
 process.stdout.write('studio worker starting\n');
 
-const engine = createEngineFromEnv();
+const engine = await createEngineFromEnv();
 await engine.start();
 
 const shutdown = async (signal: string) => {

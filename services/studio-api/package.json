@@ -18,7 +18,6 @@
     "@langchain/core": "^1.0.1",
     "@langchain/langgraph": "^1.0.1",
     "@langchain/langgraph-checkpoint-postgres": "^1.0.0",
-    "@langchain/openai": "^1.0.0",
     "@wfm/contracts": "workspace:*",
     "@wfm/eventbus": "workspace:*",
     "@wfm/observability": "workspace:*",

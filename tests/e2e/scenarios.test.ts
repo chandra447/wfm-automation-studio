@@ -60,13 +60,18 @@ async function runFor(triggerEventType: string, exclude: ReadonlySet<string>): P
   );
 }
 
+/**
+ * A run that reaches an AI decision node calls the configured provider, and a
+ * real vendor can take the better part of a minute on a large prompt, so this
+ * waits well past the engine's own 90s model timeout.
+ */
 async function runUntil(runId: string, status: RunSummary['status']): Promise<RunDetail> {
   return waitFor<RunDetail>(
     async () => {
       const { body } = await call<RunDetail>(`${studioApi}/runs/${runId}`, { headers: headersFor('manager') });
       return body.run.status === status ? body : null;
     },
-    { description: `run ${runId} to reach ${status}`, timeoutMs: 40_000 },
+    { description: `run ${runId} to reach ${status}`, timeoutMs: 240_000 },
   );
 }
 
@@ -98,7 +103,7 @@ describe('scenario A — coverage rescue', () => {
     expect(kinds).toContain('policy_evaluated');
     expect(kinds).toContain('proposal_created');
     expect(kinds).toContain('approval_requested');
-  }, 90000);
+  }, 300_000);
 
   test('an employee without the role cannot approve', async () => {
     const parked = await runUntil(runId, 'awaiting_approval');
@@ -112,7 +117,7 @@ describe('scenario A — coverage rescue', () => {
 
     const still = await call<Approval[]>(`${studioApi}/approvals?status=pending`, { headers: headersFor('manager') });
     expect(still.body.some((approval) => approval.approvalId === approvalId)).toBe(true);
-  }, 90000);
+  }, 300_000);
 
   test('the manager approves and the engine offers the shift', async () => {
     const parked = await runUntil(runId, 'awaiting_approval');
@@ -137,7 +142,7 @@ describe('scenario A — coverage rescue', () => {
     expect(offers.status).toBe(200);
     expect(offers.body.shiftId).toBe(shiftId);
     expect(offers.body.offers.length).toBeGreaterThan(0);
-  }, 90000);
+  }, 300_000);
 
   test('a rejection is recorded and no command is issued', async () => {
     const before = await runIds();
@@ -199,11 +204,21 @@ describe('scenario A — coverage rescue', () => {
       headers: headersFor('manager'),
     });
     expect(offersAfter.body.offers.length).toBe(offersBefore.body.offers.length);
-  }, 90000);
+  }, 300_000);
 });
 
 describe('scenario B — payroll-safe timesheet exception', () => {
+  /**
+   * The suite asserts a fixed outcome, so it runs the deterministic proposer.
+   * The configured vendor is exercised by scripts/verify-features.sh, which
+   * checks the proposal, the tokens, and the cost against the real provider.
+   */
   test('a missed break is drafted, approved by People Ops, and applied once', async () => {
+    await call(`${studioApi}/provider-settings`, {
+      method: 'PUT',
+      headers: headersFor('manager'),
+      body: { kind: 'none' },
+    });
     const runsBefore = await runIds();
     const simulated = await call<SimulatorResponse>(`${studioApi}/simulator/payroll_exception`, {
       method: 'POST',
@@ -237,7 +252,7 @@ describe('scenario B — payroll-safe timesheet exception', () => {
     });
     expect(after.body.timesheet.status).toBe('adjusted');
     expect(after.body.timesheet.totalPayCents).not.toBe(before.body.timesheet.totalPayCents);
-  }, 90000);
+  }, 300_000);
 });
 
 describe('platform behaviour visible end to end', () => {

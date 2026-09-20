@@ -5,7 +5,6 @@ import {
   timesheetSchema,
 } from '@wfm/contracts';
 import type { AnyWfmEvent } from '@wfm/contracts';
-import { ChatOpenAI } from '@langchain/openai';
 import {
   candidateChoiceOutputSchema,
   timesheetAdjustmentOutputSchema,
@@ -15,6 +14,9 @@ import {
 } from '@wfm/workflows';
 import { z } from 'zod';
 import { EnginePermanentError } from '../errors.ts';
+import { LlmAccounting } from '../../llm/accounting.ts';
+import { LlmSettings } from '../../llm/settings.ts';
+import type { LlmCompletion, LlmProvider } from '../../llm/provider.ts';
 
 /**
  * The proposer port (ADR-0006): the model proposes, policy constrains, and a
@@ -37,6 +39,8 @@ export type CoveragePlanOutput = z.infer<typeof coveragePlanOutputSchema>;
 export type ProposalOutputShape = CandidateChoiceOutput | TimesheetAdjustmentOutput | CoveragePlanOutput;
 
 export interface ProposerInput {
+  /** Which run and node this proposal is for, so a model call can be attributed. */
+  runId: string;
   node: AiDecisionNode;
   event: AnyWfmEvent;
   /** Tool outputs keyed by tool id; only the node's declared tools are present. */
@@ -241,28 +245,36 @@ const OUTPUT_SCHEMAS: Record<AiDecisionNode['config']['output'], z.ZodType> = {
 };
 
 /**
- * Structured-output proposer. Used only when OPENAI_API_KEY is set; its output
- * is validated against the same schemas as the rules proposer and ineligible
- * employees are filtered out — the model is never authoritative.
+ * Structured-output proposer over the configured provider. Its output is
+ * validated against the same schemas as the rules proposer and ineligible
+ * employees are dropped afterwards, so the model is never authoritative.
  */
 export class LlmProposer implements Proposer {
-  readonly #model: ChatOpenAI;
-  readonly #modelName: string;
+  readonly #provider: LlmProvider;
+  readonly #accounting: LlmAccounting | undefined;
+  readonly #provenance: { tenantId: string; runId: string; nodeId: string } | undefined;
 
-  constructor(env: { OPENAI_API_KEY: string; OPENAI_MODEL?: string | undefined; LLM_TIMEOUT_MS?: string | undefined }) {
-    this.#modelName = env.OPENAI_MODEL ?? 'gpt-5.1';
-    this.#model = new ChatOpenAI({
-      apiKey: env.OPENAI_API_KEY,
-      model: this.#modelName,
-      timeout: env.LLM_TIMEOUT_MS ? Number(env.LLM_TIMEOUT_MS) : 20_000,
-    });
+  constructor(
+    provider: LlmProvider,
+    options: { accounting?: LlmAccounting; provenance?: { tenantId: string; runId: string; nodeId: string } } = {},
+  ) {
+    this.#provider = provider;
+    this.#accounting = options.accounting;
+    this.#provenance = options.provenance;
   }
 
   async propose(input: ProposerInput): Promise<ProposerResult> {
     const { node, event, data } = input;
     const schema = OUTPUT_SCHEMAS[node.config.output];
-    const structured = this.#model.withStructuredOutput(schema);
-    const prompt = [
+    const system = [
+      'You are a workforce planner. Reply with a single JSON object and nothing else.',
+      'A deterministic policy check will reject a draft that breaks the award rule or the cost cap in the tool data, so satisfy them.',
+      `Keys required: ${JSON.stringify(outputKeysFor(node.config.output))}.`,
+      node.config.mustCiteEvidence ? 'Include at least one evidence entry with a label and a value.' : '',
+    ]
+      .filter((line) => line !== '')
+      .join(' ');
+    const user = [
       `Goal: ${node.config.goal}`,
       `Trigger event: ${JSON.stringify(event)}`,
       `Tool data: ${JSON.stringify(data)}`,
@@ -272,8 +284,9 @@ export class LlmProposer implements Proposer {
     let lastError: unknown = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const raw: unknown = await structured.invoke(prompt);
-        const validated = schema.safeParse(raw);
+        const completion = await this.#provider.complete({ system, user });
+        await this.#record(completion, 'ok');
+        const validated = schema.safeParse(parseJsonObject(completion.content));
         if (!validated.success) {
           throw new ProposerError(
             `llm proposal failed schema validation: ${validated.error.issues.map((issue) => issue.path.join('.')).join(', ')}`,
@@ -285,16 +298,32 @@ export class LlmProposer implements Proposer {
           rationale: result.rationale,
           evidence: result.evidence,
           proposer: 'llm',
-          model: this.#modelName,
+          model: completion.model,
           promptVersion: PROMPT_VERSION,
         };
       } catch (error) {
         lastError = error;
+        await this.#record(undefined, 'error');
       }
     }
     throw lastError instanceof ProposerError
       ? lastError
       : new ProposerError(`llm proposer failed after retry: ${String(lastError)}`);
+  }
+
+  async #record(completion: LlmCompletion | undefined, status: 'ok' | 'error'): Promise<void> {
+    if (this.#accounting === undefined || this.#provenance === undefined) return;
+    await this.#accounting.recordCall({
+      tenantId: this.#provenance.tenantId,
+      runId: this.#provenance.runId,
+      nodeId: this.#provenance.nodeId,
+      providerKind: this.#provider.kind,
+      model: this.#provider.model,
+      inputTokens: completion?.inputTokens ?? 0,
+      outputTokens: completion?.outputTokens ?? 0,
+      latencyMs: completion?.latencyMs ?? 0,
+      status,
+    });
   }
 
   #withoutIneligible(result: ProposalOutputShape, input: ProposerInput): ProposalOutputShape {
@@ -316,10 +345,57 @@ export class LlmProposer implements Proposer {
   }
 }
 
-export function createProposer(env: {
-  OPENAI_API_KEY: string;
-  OPENAI_MODEL?: string | undefined;
-  LLM_TIMEOUT_MS?: string | undefined;
-}): Proposer {
-  return env.OPENAI_API_KEY ? new LlmProposer(env) : new RulesProposer();
+/** The keys the model must return, listed for the prompt. */
+function outputKeysFor(output: AiDecisionNode['config']['output']): string[] {
+  const shape = OUTPUT_SCHEMAS[output];
+  return shape instanceof z.ZodObject ? Object.keys(shape.shape) : [];
 }
+
+/** A model that wrapped its JSON in prose or fences is still usable. */
+function parseJsonObject(content: string): unknown {
+  const trimmed = content.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * The proposer the engine runs with. It resolves the tenant's provider on every
+ * call, because the setting can change between runs, and falls back to the
+ * deterministic rules proposer when the tenant has no model configured.
+ */
+export class ResolvingProposer implements Proposer {
+  readonly #settings: LlmSettings;
+  readonly #accounting: LlmAccounting;
+  readonly #rules: Proposer;
+
+  constructor(deps: { settings: LlmSettings; accounting: LlmAccounting; rules?: Proposer }) {
+    this.#settings = deps.settings;
+    this.#accounting = deps.accounting;
+    this.#rules = deps.rules ?? new RulesProposer();
+  }
+
+  async propose(input: ProposerInput): Promise<ProposerResult> {
+    const provider = await this.#settings.resolveProvider(input.event.tenantId);
+    if (provider === null) return this.#rules.propose(input);
+    const proposer = new LlmProposer(provider, {
+      accounting: this.#accounting,
+      provenance: {
+        tenantId: input.event.tenantId,
+        runId: input.runId,
+        nodeId: input.node.id,
+      },
+    });
+    return proposer.propose(input);
+  }
+}
+

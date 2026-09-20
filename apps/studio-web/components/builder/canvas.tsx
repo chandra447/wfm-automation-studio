@@ -31,8 +31,11 @@ import { apiFetch, ApiFailure } from '@/lib/api';
 import { useDemoActor } from '@/components/demo-actor-provider';
 import { Button } from '@/components/ui/button';
 import { BuilderNode } from './builder-node';
+import { type ControlOption, type OptionSources } from './control-options';
+import { DataPalette } from './data-palette';
 import { DiagnosticsPanel } from './diagnostics-panel';
-import { Inspector, type TriggerEventOption } from './inspector';
+import { TemplateFieldProvider } from './field-renderer';
+import { Inspector } from './inspector';
 import { Palette } from './palette';
 import { Toolbar, type SaveState } from './toolbar';
 import {
@@ -57,6 +60,7 @@ import { serializeSnapshot, useBuilderStore } from './use-builder-store';
 import {
   diagnosticsFromDetails,
   toSaveBody,
+  type ModelDescriptor,
   type TriggerDescriptor,
   type WorkflowDetail,
   type WorkflowMutationResult,
@@ -265,7 +269,8 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [publishedVersion, setPublishedVersion] = useState<number | null>(null);
   const [publishing, setPublishing] = useState(false);
-  const [triggerEvents, setTriggerEvents] = useState<readonly TriggerEventOption[]>([]);
+  const [triggerEvents, setTriggerEvents] = useState<readonly ControlOption[]>([]);
+  const [models, setModels] = useState<readonly ControlOption[]>([]);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(true);
 
   const storeRef = useRef(store);
@@ -286,7 +291,10 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
   const diagnostics = useMemo(() => validateWorkflow(snapshot.definition), [snapshot.definition]);
   const errorCount = diagnostics.filter((diagnostic) => diagnostic.severity === 'error').length;
   const grouped = useMemo(() => diagnosticsByNode(diagnostics), [diagnostics]);
-  const flowNodes = useMemo(() => toFlowNodes(snapshot.definition, snapshot.layout, grouped), [snapshot, grouped]);
+  const flowNodes = useMemo(
+    () => toFlowNodes(snapshot.definition, snapshot.layout, grouped, selectedId),
+    [snapshot, grouped, selectedId],
+  );
   const flowEdges = useMemo(() => toFlowEdges(snapshot.definition), [snapshot.definition]);
   const selectedNode: WorkflowNode | null = useMemo(
     () => snapshot.definition.nodes.find((candidate) => candidate.id === selectedId) ?? null,
@@ -296,6 +304,11 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
     const table: Record<string, WorkflowNodeType> = {};
     for (const node of snapshot.definition.nodes) table[node.id] = node.type;
     return table;
+  }, [snapshot.definition]);
+  const sources = useMemo<OptionSources>(() => ({ triggerEvents, models }), [triggerEvents, models]);
+  const triggerEventType = useMemo(() => {
+    const trigger = snapshot.definition.nodes.find((node) => node.type === 'trigger');
+    return trigger && trigger.type === 'trigger' ? trigger.config.eventType : defaultEventType();
   }, [snapshot.definition]);
 
   useEffect(() => {
@@ -340,10 +353,20 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
       try {
         const triggers = await apiFetch<TriggerDescriptor[]>('/triggers', { headers: headersRef.current });
         if (!alive) return;
-        setTriggerEvents(triggers.map((trigger) => ({ eventType: trigger.eventType, owner: trigger.owner })));
+        setTriggerEvents(triggers.map((trigger) => ({ value: trigger.eventType, label: trigger.eventType })));
       } catch {
         if (!alive) return;
-        setTriggerEvents([{ eventType: defaultEventType(), owner: 'local catalogue' }]);
+        setTriggerEvents([{ value: defaultEventType(), label: defaultEventType() }]);
+      }
+    })();
+    void (async () => {
+      try {
+        const catalogue = await apiFetch<ModelDescriptor[]>('/models', { headers: headersRef.current });
+        if (!alive) return;
+        setModels(catalogue.map((model) => ({ value: model.id, label: `${model.label} · ${model.provider}` })));
+      } catch {
+        if (!alive) return;
+        setModels([]);
       }
     })();
     return () => {
@@ -542,55 +565,58 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
         </Banner>
       )}
       <div className="flex min-h-0 flex-1">
-        <Palette
-          disabled={!loaded}
-          onAdd={(nodeType) => {
-            const id = nextNodeId(snapshot.definition.nodes.map((node) => node.id), nodeType);
-            const viewport = snapshot.layout.viewport;
-            store.addNode(
-              { ...defaultNode(nodeType), id },
-              { x: (-viewport.x + 360) / viewport.zoom, y: (-viewport.y + 240) / viewport.zoom },
-            );
-            setSelectedId(id);
-          }}
-        />
-        <ReactFlowProvider>
-          <FlowCanvas
-            flowNodes={flowNodes}
-            flowEdges={flowEdges}
-            nodeTypeById={nodeTypeById}
-            viewportSeed={offline ? `offline:${workflowId}` : loaded ? `loaded:${workflowId}` : 'pending'}
-            initialViewport={snapshot.layout.viewport}
-            selectedId={selectedId}
-            onSelectNode={setSelectedId}
-            onAddNodeType={(nodeType, position) => {
+        <TemplateFieldProvider>
+          <Palette
+            disabled={!loaded}
+            onAdd={(nodeType) => {
               const id = nextNodeId(snapshot.definition.nodes.map((node) => node.id), nodeType);
-              store.addNode({ ...defaultNode(nodeType), id }, position);
+              const viewport = snapshot.layout.viewport;
+              store.addNode(
+                { ...defaultNode(nodeType), id },
+                { x: (-viewport.x + 360) / viewport.zoom, y: (-viewport.y + 240) / viewport.zoom },
+              );
               setSelectedId(id);
             }}
-            onConnect={(edge) => store.addEdge(edge)}
-            onNodesDelete={store.deleteNodes}
-            onEdgesDelete={(edgeIds) => {
-              const doomed = new Set(edgeIds);
-              store.deleteEdges(
-                snapshot.definition.edges.filter((edge) => doomed.has(edgeKey(edge))).map((edge) => edgeKey(edge)),
-              );
-            }}
-            onNodeDragStop={store.updatePositions}
-            onViewportChange={store.updateViewport}
           />
-        </ReactFlowProvider>
-        <Inspector
-          node={selectedId === null ? null : selectedNode}
-          definition={snapshot.definition}
-          triggerEvents={triggerEvents}
-          onChange={store.updateNode}
-          onMetaChange={store.updateMeta}
-          onDeleteNode={(nodeId) => {
-            store.deleteNodes([nodeId]);
-            if (selectedId === nodeId) setSelectedId(null);
-          }}
-        />
+          <ReactFlowProvider>
+            <FlowCanvas
+              flowNodes={flowNodes}
+              flowEdges={flowEdges}
+              nodeTypeById={nodeTypeById}
+              viewportSeed={offline ? `offline:${workflowId}` : loaded ? `loaded:${workflowId}` : 'pending'}
+              initialViewport={snapshot.layout.viewport}
+              selectedId={selectedId}
+              onSelectNode={setSelectedId}
+              onAddNodeType={(nodeType, position) => {
+                const id = nextNodeId(snapshot.definition.nodes.map((node) => node.id), nodeType);
+                store.addNode({ ...defaultNode(nodeType), id }, position);
+                setSelectedId(id);
+              }}
+              onConnect={(edge) => store.addEdge(edge)}
+              onNodesDelete={store.deleteNodes}
+              onEdgesDelete={(edgeIds) => {
+                const doomed = new Set(edgeIds);
+                store.deleteEdges(
+                  snapshot.definition.edges.filter((edge) => doomed.has(edgeKey(edge))).map((edge) => edgeKey(edge)),
+                );
+              }}
+              onNodeDragStop={store.updatePositions}
+              onViewportChange={store.updateViewport}
+            />
+          </ReactFlowProvider>
+          <Inspector
+            node={selectedId === null ? null : selectedNode}
+            definition={snapshot.definition}
+            sources={sources}
+            onChange={store.updateNode}
+            onMetaChange={store.updateMeta}
+            onDeleteNode={(nodeId) => {
+              store.deleteNodes([nodeId]);
+              if (selectedId === nodeId) setSelectedId(null);
+            }}
+          />
+          <DataPalette eventType={triggerEventType} triggerEvents={triggerEvents} headers={headers} />
+        </TemplateFieldProvider>
       </div>
       <DiagnosticsPanel
         diagnostics={serverDiagnostics ? [...serverDiagnostics, ...diagnostics] : diagnostics}

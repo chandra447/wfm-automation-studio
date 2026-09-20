@@ -4,7 +4,7 @@ import { createEngineFromEnv } from './engine/index.ts';
 
 const port = Number(process.env.STUDIO_API_PORT ?? 4103);
 
-const engine = engineOf(createEngineFromEnv);
+const engine = await engineOf(createEngineFromEnv);
 await engine.start();
 
 app.listen(port);

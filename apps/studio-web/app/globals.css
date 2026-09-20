@@ -29,6 +29,7 @@
   --color-node-ai: oklch(0.68 0.18 300);
   --color-node-policy: oklch(0.74 0.15 160);
   --color-node-approval: oklch(0.7 0.17 10);
+  --color-node-artifact: #2dd4bf;
   --color-node-action: oklch(0.75 0.16 55);
   --color-node-end: oklch(0.66 0.02 265);
 

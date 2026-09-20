@@ -171,12 +171,71 @@ Customers compose workflows on a drag-and-drop canvas. The saved artifact is a d
 }
 ```
 
-Node types: trigger, condition, ai_decision, policy_check, human_approval, action, end. Ports carry
-outcomes (`true`/`false`, `passed`/`failed`, `approved`/`rejected`). Templates wire one node's output
-into the next node's input and are validated at save time.
+Node types: trigger, condition, ai_decision, policy_check, human_approval, action, artifact, end.
+Ports carry outcomes (`true`/`false`, `passed`/`failed`, `approved`/`rejected`). Templates wire one
+node's output into the next node's input and are validated at save time.
 
-`packages/workflows` owns the DSL, the catalogues (commands, tools, palette), the validator, and the
-compiler. Canvas geometry lives beside the definition as `layout` and never inside it.
+`packages/workflows` owns the DSL, the kind registry, the reference grammar and resolver, the
+catalogues (commands, tools), the validator, and the compiler. Canvas geometry lives beside the
+definition as `layout` and never inside it.
+
+### 7.2.1 A node kind is one declaration
+
+Each kind lives in its own file under `packages/workflows/src/kinds/` and declares everything the
+platform knows about it: config schema, legal ports, ports that must be wired, capabilities, palette
+entry, canvas field specs, a summary function, kind-local config rules, and the config strings that
+carry `{{...}}` references. One registry table assembles them into the runtime schema and the
+TypeScript union, and derives the palette, the legal-ports table, and the default-node builder.
+
+The validator's platform invariants are written against capabilities, not kinds:
+
+| Capability | What the platform does with it |
+|---|---|
+| `isTrigger` | exactly one per definition, no incoming edges, supplies the run input |
+| `terminal` | ends a path, no outgoing edges, a target for the reachability checks |
+| `providesPolicy` | satisfies the guardrail requirement for downstream mutating nodes |
+| `providesApproval` | satisfies the human-decision requirement for downstream pay-impacting nodes |
+| `mutatesDomain` | subject of the authority rules |
+| `producesOutput` | downstream nodes may reference its output |
+| `producesArtifact` | the compiler buckets it as an artifact producer |
+| `payImpact` | whether this node moves pay; a kind resolves it per node when it depends on config |
+
+So a new kind that declares `mutatesDomain` inherits "every action needs a policy check on every
+path" and "a pay-affecting action needs a human approval on every path" with no new validator code,
+and a kind that declares `providesApproval` satisfies those rules for every other kind. The canvas
+renders a kind's fields from its own declaration, so no React component is written per kind. The
+inspector went from 1025 lines of per-kind JSX to 104.
+
+The one place the union has to collapse is dispatch: a union of per-kind executor signatures cannot
+be called with the union node type, because the parameter types intersect to `never`. The engine
+keeps one uniform executor signature in a table keyed by node type, and each executor narrows with a
+type predicate.
+
+### 7.2.2 References, single-sourced
+
+A config string may read the run's own data:
+
+```
+{{input.payload.shiftId}}          the trigger event's payload
+{{nodes.<nodeId>.output.<path>}}   an earlier node's output
+{{run.workflowName}}               run metadata
+{{now}} | {{now+4h}}               a timestamp, optionally offset
+```
+
+One grammar parses them, one resolver evaluates them, one checker validates them at save time. The
+checker walks the trigger event's published JSON Schema, so `{{input.payload.shiftId}}` is accepted
+and a typo is refused with the event named. A template that is exactly one reference splices the raw
+value rather than its string form, which is what lets an action pass an array of employee ids.
+
+The canvas lists the available paths with sample values and inserts them at the caret of the focused
+template field, so an author does not have to remember a path.
+
+### 7.2.3 Artifacts
+
+A run can render a document from its own data and attach it. The `artifact` kind declares its body as
+a template slot and inherits parsing, resolution, and save-time checking from the reference
+mechanism; the engine executor resolves the slot, stores the rendered content, and writes an audit
+row. Artifacts are listed on the run detail as part of its delivered output and retrievable by id.
 
 ### 7.3 Platform invariants, enforced at save time
 
@@ -237,6 +296,27 @@ before `interrupt()` re-runs on resume, so every write in that node is an upsert
 `GET /approvals` · `POST /approvals/:approvalId/decision` · `POST /simulator/:scenario`.
 
 The simulator drives the domain services over HTTP, never the bus, so the demo exercises the real path.
+
+### 7.6 The model provider is the customer's choice
+
+A tenant selects one of `platform` (the endpoint this deployment is configured with), an
+OpenAI-compatible base URL of their own, or Anthropic. A customer key is stored encrypted with
+AES-256-GCM and is never returned by any read. The provider is an abstract class over raw HTTP with
+two implementations, so no vendor SDK is in the dependency tree, and a run whose tenant has no
+provider falls back to the deterministic rules proposer.
+
+Only models declared in `config/models.jsonl` are offered. Each line carries the id, label, provider,
+context window, JSON-mode support, and the price per million tokens each way. Adding a model is one
+line. A workflow that names a model the file does not declare is refused at save time.
+
+Every call records the vendor's own token counts in `llm_calls`, so the run detail, the run list, and
+the dashboard show the same numbers, priced from the catalogue, auditable back to the call.
+
+### 7.7 Dashboard
+
+`GET /dashboard` aggregates runs by status, the last 24 hours, the median duration over finished
+runs, token totals and estimated cost, and one row per workflow with its versions, run count, and
+last run. The page shows those alongside the recent runs and the scenario simulator.
 
 ## 8. Reliability model
 

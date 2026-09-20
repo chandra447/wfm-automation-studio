@@ -29,19 +29,20 @@ interface TemplateEntry {
 
 const blankDefinition = emptyDefinitionFor(defaultEventType());
 
+const blankEntry: TemplateEntry = {
+  key: 'blank',
+  title: blankDefinition.name,
+  description: 'A trigger wired to an end node. Add branches, checks, and approvals yourself.',
+  build: () => ({
+    definition: structuredClone(blankDefinition),
+    layout: {
+      viewport: { x: 0, y: 0, zoom: 1 },
+      positions: { trigger: { x: 0, y: 160 }, done: { x: 320, y: 160 } },
+    },
+  }),
+};
+
 const templateEntries: readonly TemplateEntry[] = [
-  {
-    key: 'blank',
-    title: blankDefinition.name,
-    description: 'A trigger wired to an end node. Add branches, checks, and approvals yourself.',
-    build: () => ({
-      definition: structuredClone(blankDefinition),
-      layout: {
-        viewport: { x: 0, y: 0, zoom: 1 },
-        positions: { trigger: { x: 0, y: 160 }, done: { x: 320, y: 160 } },
-      },
-    }),
-  },
   {
     key: 'coverage-rescue',
     title: demoWorkflows[0].definition.name,
@@ -61,6 +62,8 @@ const templateEntries: readonly TemplateEntry[] = [
     }),
   },
 ];
+
+const startEntries: readonly TemplateEntry[] = [blankEntry, ...templateEntries];
 
 function templateSummary(definition: WorkflowDefinition): string {
   const counts: Record<string, number> = {};
@@ -152,6 +155,26 @@ export function BuilderList() {
     }
   };
 
+  const copyExisting = async (source: WorkflowSummary) => {
+    setCreating(source.workflowId);
+    setCreateError(null);
+    try {
+      const result = await apiFetch<WorkflowMutationResult>('/workflows', {
+        method: 'POST',
+        headers,
+        body: { name: `${source.name} copy`, fromWorkflowId: source.workflowId },
+      });
+      router.push(`/builder/${result.workflowId}`);
+    } catch (error) {
+      setCreating(null);
+      setCreateError(
+        error instanceof ApiFailure
+          ? `${error.message} (${error.status})`
+          : 'Could not reach the studio API to copy that workflow.',
+      );
+    }
+  };
+
   return (
     <div className="relative min-h-full">
       <GridBackdrop />
@@ -181,31 +204,84 @@ export function BuilderList() {
                 <DialogHeader>
                   <DialogTitle>Choose a starting point</DialogTitle>
                   <DialogDescription>
-                    Templates are ordinary definitions — the canvas loads them, you edit them.
+                    Start blank, from a template, or from a copy of a workflow you already have.
                   </DialogDescription>
                 </DialogHeader>
-                <div className="flex flex-col gap-2">
-                  {templateEntries.map((entry) => (
+                <div className="flex max-h-[65vh] flex-col gap-3 overflow-y-auto">
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">
+                      Blank
+                    </p>
                     <Button
-                      key={entry.key}
                       variant="outline"
                       className="h-auto flex-col items-start gap-1 px-3 py-3 text-left"
                       disabled={creating !== null}
-                      onClick={() => void create(entry)}
+                      onClick={() => void create(blankEntry)}
                     >
-                      <span className="text-sm font-medium">{entry.title}</span>
+                      <span className="text-sm font-medium">{blankEntry.title}</span>
                       <span className="text-[11px] font-normal leading-snug text-[var(--color-ink-faint)]">
-                        {entry.description}
+                        {blankEntry.description}
                       </span>
                     </Button>
-                  ))}
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">
+                      Templates
+                    </p>
+                    {templateEntries.map((entry) => (
+                      <Button
+                        key={entry.key}
+                        variant="outline"
+                        className="h-auto flex-col items-start gap-1 px-3 py-3 text-left"
+                        disabled={creating !== null}
+                        onClick={() => void create(entry)}
+                      >
+                        <span className="text-sm font-medium">{entry.title}</span>
+                        <span className="text-[11px] font-normal leading-snug text-[var(--color-ink-faint)]">
+                          {entry.description}
+                        </span>
+                      </Button>
+                    ))}
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">
+                      Copy an existing workflow
+                    </p>
+                    {workflows === null && (
+                      <p className="text-[11px] text-[var(--color-ink-faint)]">Loading your workflows…</p>
+                    )}
+                    {workflows !== null && workflows.length === 0 && (
+                      <p className="text-[11px] text-[var(--color-ink-faint)]">
+                        No saved workflows to copy yet — start from a template.
+                      </p>
+                    )}
+                    {workflows?.map((workflow) => (
+                      <Button
+                        key={workflow.workflowId}
+                        variant="outline"
+                        className="h-auto flex-col items-start gap-1 px-3 py-3 text-left"
+                        disabled={creating !== null}
+                        onClick={() => void copyExisting(workflow)}
+                      >
+                        <span className="text-sm font-medium">{workflow.name}</span>
+                        <span className="text-[11px] font-normal leading-snug text-[var(--color-ink-faint)]">
+                          draft v{workflow.draftVersionNumber}
+                          {workflow.publishedVersionNumber !== null
+                            ? ` · published v${workflow.publishedVersionNumber}`
+                            : ''}
+                          {' · '}
+                          {isoTime(workflow.updatedAt)}
+                        </span>
+                      </Button>
+                    ))}
+                  </div>
                   {createError !== null && <p className="text-[11px] text-[var(--color-danger)]">{createError}</p>}
                 </div>
               </DialogContent>
             </Dialog>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
-            {templateEntries.map((entry, index) => {
+            {startEntries.map((entry, index) => {
               const built = entry.build();
               return (
                 <motion.article

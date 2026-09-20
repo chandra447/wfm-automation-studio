@@ -4,13 +4,7 @@ import type { AnyWfmEvent } from '@wfm/contracts';
 import type { GraphSpec, WorkflowDefinition, WorkflowNode } from '@wfm/workflows';
 import type { RunScope, RunStateFields } from './state.ts';
 import type { ExecutorDeps } from './nodes/context.ts';
-import { runActionNode } from './nodes/action.ts';
-import { runApprovalNode } from './nodes/approval.ts';
-import { runConditionNode } from './nodes/condition.ts';
-import { runEndNode } from './nodes/end.ts';
-import { runPolicyNode } from './nodes/policy.ts';
-import { runProposeNode } from './nodes/propose.ts';
-import { runTriggerNode } from './nodes/trigger.ts';
+import { executorFor } from './nodes/executors.ts';
 
 /**
  * The LangGraph runtime mapping (ADR-0005). The compiled GraphSpec is built
@@ -54,7 +48,7 @@ export function buildRunGraph(
   for (const specNode of spec.nodes) {
     const node = nodesById[specNode.id];
     if (!node) throw new Error(`spec node ${specNode.id} is missing from the definition`);
-    graph.addNode(specNode.id, (state: RunState) => executeNode(node, scope, deps, state));
+    graph.addNode(specNode.id, (state: RunState) => executorFor(node.type)(scope, deps, node, state));
   }
 
   for (const specNode of spec.nodes) {
@@ -86,28 +80,4 @@ export function buildRunGraph(
 
   graph.addEdge(START, spec.entry);
   return graph.compile({ checkpointer });
-}
-
-async function executeNode(
-  node: WorkflowNode,
-  scope: RunScope,
-  deps: ExecutorDeps,
-  state: RunState,
-): Promise<Pick<RunStateFields, 'nodes' | 'cursor' | 'decision'>> {
-  switch (node.type) {
-    case 'trigger':
-      return runTriggerNode(scope, deps, node, state);
-    case 'condition':
-      return runConditionNode(scope, deps, node, state);
-    case 'ai_decision':
-      return runProposeNode(scope, deps, node, state);
-    case 'policy_check':
-      return runPolicyNode(scope, deps, node, state);
-    case 'human_approval':
-      return runApprovalNode(scope, deps, node, state);
-    case 'action':
-      return runActionNode(scope, deps, node, state);
-    case 'end':
-      return runEndNode(scope, deps, node);
-  }
 }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { parseTemplateExpression, referencedNodeIds, resolveTemplate, resolveTemplateMap } from '../src/templates.ts';
+import { parseTemplateExpression, referencedNodeIds } from '../src/references/grammar.ts';
+import { resolveTemplate, resolveTemplateMap } from '../src/references/resolve.ts';
 
 describe('template parsing', () => {
   test('recognises the three supported forms', () => {
@@ -30,6 +31,7 @@ describe('template resolution', () => {
   const scope = {
     input: { payload: { shiftId: 'shift-1', hoursUntilStart: 7.5 } },
     nodes: { rank: { output: { employeeIds: ['e1', 'e2'], costDeltaCents: 18400 } } },
+    run: {},
     now: new Date('2026-09-20T06:00:00.000Z'),
   };
 

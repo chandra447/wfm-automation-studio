@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, sql as dsql } from 'drizzle-orm';
 import type { BunSQLDatabase } from 'drizzle-orm/bun-sql';
-import type { Approval, RunEvent, RunStatus, RunSummary } from '@wfm/contracts';
+import type { Approval, RunDetail, RunEvent, RunInput, RunOutput, RunStatus, RunSummary } from '@wfm/contracts';
 import * as schema from '../db/schema.ts';
 
 export type RunRow = typeof schema.runs.$inferSelect;
@@ -182,7 +182,14 @@ export async function insertApproval(db: RunDb, row: typeof schema.approvals.$in
   return row0;
 }
 
-export function toRunSummary(run: RunRow, versionNumber: number, pendingApprovalId: string | null): RunSummary {
+const EMPTY_TOKENS: RunSummary['tokens'] = { inputTokens: 0, outputTokens: 0, calls: 0, estimatedCostCents: 0 };
+
+export function toRunSummary(
+  run: RunRow,
+  versionNumber: number,
+  pendingApprovalId: string | null,
+  tokens: RunSummary['tokens'] = EMPTY_TOKENS,
+): RunSummary {
   return {
     runId: run.runId,
     tenantId: run.tenantId,
@@ -198,6 +205,45 @@ export function toRunSummary(run: RunRow, versionNumber: number, pendingApproval
     actionsExecuted: run.actionsExecuted,
     summary: run.summary,
     pendingApprovalId,
+    tokens,
+  };
+}
+
+function hasPayload(value: unknown): value is { payload: unknown } {
+  return typeof value === 'object' && value !== null && 'payload' in value;
+}
+
+/**
+ * The stored trigger event is the whole envelope; the run's input is its
+ * payload, which is the part a workflow could read.
+ */
+export function payloadOf(data: unknown): unknown {
+  if (hasPayload(data)) return data.payload;
+  return data ?? null;
+}
+
+/** The trigger, which is the data the workflow could read. */
+export function toRunInput(
+  run: RunRow,
+  versionNumber: number,
+  payload: unknown,
+): RunInput {
+  return {
+    triggerEventId: run.triggerEventId,
+    triggerEventType: run.triggerEventType,
+    payload,
+    workflowName: run.workflowName,
+    workflowVersionNumber: versionNumber,
+  };
+}
+
+/** What the run delivered, which is what a reviewer checks it against. */
+export function toRunOutput(run: RunRow, artifacts: RunDetail['output']['artifacts']): RunOutput {
+  return {
+    status: run.status as RunStatus,
+    summary: run.summary,
+    actionsExecuted: run.actionsExecuted,
+    artifacts,
   };
 }
 

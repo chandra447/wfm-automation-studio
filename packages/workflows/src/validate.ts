@@ -1,50 +1,28 @@
-import { triggerCatalog } from '@wfm/contracts';
-import { commandCatalog, toolCatalog, type CommandDescriptor, type ToolDescriptor } from './catalogue.ts';
 import {
-  legalPortsByNodeType,
-  workflowDefinitionSchema,
-  type WorkflowDefinition,
-  type WorkflowNode,
-  type WorkflowNodeType,
-} from './dsl.ts';
-import { TEMPLATE_PATTERN, parseTemplateExpression } from './templates.ts';
+  capabilitiesOf,
+  configRulesFor,
+  kindOf,
+  templateSlotsOf,
+} from './kinds/registry.ts';
+import { authorityRules } from './kinds/invariants.ts';
+import {
+  defaultValidationContext,
+  WorkflowValidationError,
+  type Diagnostic,
+  type ValidationContext,
+} from './diagnostics.ts';
+import { checkTemplateStrings } from './references/static-check.ts';
+import { workflowDefinitionSchema, type WorkflowDefinition, type WorkflowNode } from './dsl.ts';
 
 /**
  * Validation is where user freedom meets platform invariants. A customer can
  * wire any shape they like; these rules are what stop them shipping something
  * that moves pay without a human, or that reasons its way past a policy check.
+ *
+ * Nothing here branches on a node's kind. Ports, required ports, capabilities,
+ * config rules, and template slots all come from the kind's own declaration, so
+ * a kind added tomorrow is validated by the rules already in this file.
  */
-
-export interface Diagnostic {
-  severity: 'error' | 'warning';
-  code: string;
-  message: string;
-  nodeId?: string;
-}
-
-export interface ValidationContext {
-  eventTypes: readonly string[];
-  commands: readonly CommandDescriptor[];
-  tools: readonly ToolDescriptor[];
-}
-
-export class WorkflowValidationError extends Error {
-  override readonly name = 'WorkflowValidationError';
-  readonly diagnostics: Diagnostic[];
-
-  constructor(diagnostics: Diagnostic[]) {
-    super(`workflow rejected: ${diagnostics.map((d) => `${d.code}${d.nodeId ? `@${d.nodeId}` : ''}`).join(', ')}`);
-    this.diagnostics = diagnostics;
-  }
-}
-
-export function defaultValidationContext(): ValidationContext {
-  return {
-    eventTypes: triggerCatalog().map((trigger) => trigger.eventType),
-    commands: commandCatalog,
-    tools: toolCatalog,
-  };
-}
 
 const MAX_ENUMERATED_PATHS = 512;
 
@@ -106,11 +84,11 @@ function buildGraph(definition: WorkflowDefinition, diagnostics: Diagnostic[]): 
 
 function checkPorts(graph: Graph, diagnostics: Diagnostic[]): void {
   for (const node of Object.values(graph.byId)) {
-    const legal = legalPortsByNodeType[node.type as WorkflowNodeType];
+    const kind = kindOf(node);
     const usedPorts = (graph.outgoing[node.id] ?? []).map((edge) => edge.port);
 
     for (const port of usedPorts) {
-      if (!legal.includes(port as never)) {
+      if (!kind.ports.includes(port as never)) {
         diagnostics.push({
           severity: 'error',
           code: 'PORT_NOT_ALLOWED',
@@ -120,47 +98,18 @@ function checkPorts(graph: Graph, diagnostics: Diagnostic[]): void {
       }
     }
 
-    if (node.type === 'condition') {
-      for (const port of ['true', 'false'] as const) {
-        if (!usedPorts.includes(port)) {
-          diagnostics.push({
-            severity: 'error',
-            code: 'PORT_MISSING',
-            message: `Condition nodes must wire both the "yes" and "no" paths.`,
-            nodeId: node.id,
-          });
-        }
+    for (const requirement of kind.requiredPorts) {
+      if (!usedPorts.includes(requirement.port)) {
+        diagnostics.push({
+          severity: requirement.severity,
+          code: requirement.code,
+          message: requirement.message,
+          nodeId: node.id,
+        });
       }
     }
-    if (node.type === 'policy_check') {
-      for (const port of ['passed', 'failed'] as const) {
-        if (!usedPorts.includes(port)) {
-          diagnostics.push({
-            severity: 'error',
-            code: 'PORT_MISSING',
-            message: `Policy check nodes must wire both the "passed" and "failed" paths.`,
-            nodeId: node.id,
-          });
-        }
-      }
-    }
-    if (node.type === 'human_approval' && !usedPorts.includes('approved')) {
-      diagnostics.push({
-        severity: 'error',
-        code: 'PORT_MISSING',
-        message: 'Approval nodes must wire the "approved" path.',
-        nodeId: node.id,
-      });
-    }
-    if (node.type === 'human_approval' && !usedPorts.includes('rejected')) {
-      diagnostics.push({
-        severity: 'warning',
-        code: 'PORT_MISSING_REJECTED',
-        message: 'No "rejected" path wired: a rejection will end the run immediately.',
-        nodeId: node.id,
-      });
-    }
-    if (node.type === 'end' && usedPorts.length > 0) {
+
+    if (kind.capabilities.terminal === true && usedPorts.length > 0) {
       diagnostics.push({
         severity: 'error',
         code: 'END_HAS_OUTGOING',
@@ -168,7 +117,7 @@ function checkPorts(graph: Graph, diagnostics: Diagnostic[]): void {
         nodeId: node.id,
       });
     }
-    if (node.type === 'trigger' && (graph.incoming[node.id] ?? []).length > 0) {
+    if (kind.capabilities.isTrigger === true && (graph.incoming[node.id] ?? []).length > 0) {
       diagnostics.push({
         severity: 'error',
         code: 'TRIGGER_HAS_INCOMING',
@@ -221,120 +170,82 @@ function pathsTo(graph: Graph, targetId: string): string[][] | null {
   return found.length > MAX_ENUMERATED_PATHS ? null : found;
 }
 
-function checkAuthority(graph: Graph, context: ValidationContext, diagnostics: Diagnostic[]): void {
+/**
+ * The authority invariants, applied to every node that claims the rule's
+ * subject capability. A kind that declares `mutatesDomain` inherits both rules;
+ * a kind that declares `providesApproval` satisfies them for everyone else.
+ */
+function checkAuthority(graph: Graph, diagnostics: Diagnostic[]): void {
   for (const node of Object.values(graph.byId)) {
-    if (node.type !== 'action') continue;
+    const capabilities = capabilitiesOf(node);
 
-    const command = context.commands.find((candidate) => candidate.id === node.config.command);
-    const paths = pathsTo(graph, node.id);
-    if (!paths) {
-      diagnostics.push({
-        severity: 'error',
-        code: 'GRAPH_TOO_COMPLEX',
-        message: 'Too many execution paths to prove approval coverage; simplify the workflow.',
-        nodeId: node.id,
-      });
-      continue;
-    }
+    for (const rule of authorityRules) {
+      if (capabilities[rule.subject] !== true) continue;
+      if (rule.when !== undefined && !rule.when(capabilities)) continue;
 
-    for (const path of paths) {
-      const pathNodes = path.map((id) => graph.byId[id]).filter((n): n is WorkflowNode => Boolean(n));
-      const hasPolicy = pathNodes.some((candidate) => candidate.type === 'policy_check');
-      const hasApproval = pathNodes.some((candidate) => candidate.type === 'human_approval');
-
-      if (!hasPolicy) {
+      const paths = pathsTo(graph, node.id);
+      if (!paths) {
         diagnostics.push({
           severity: 'error',
-          code: 'ACTION_WITHOUT_POLICY',
-          message: `"${node.label}" can be reached without a policy check. Every action needs deterministic guardrails on its path.`,
+          code: 'GRAPH_TOO_COMPLEX',
+          message: 'Too many execution paths to prove approval coverage; simplify the workflow.',
           nodeId: node.id,
         });
+        continue;
       }
-      if (command?.payAffecting && !hasApproval) {
-        diagnostics.push({
-          severity: 'error',
-          code: 'PAY_ACTION_WITHOUT_APPROVAL',
-          message: `"${node.label}" can move pay without a human approval on every path. Add an approval node before it.`,
-          nodeId: node.id,
-        });
-      }
-    }
-
-    if (!command) {
-      diagnostics.push({
-        severity: 'error',
-        code: 'UNKNOWN_COMMAND',
-        message: `Unknown action command "${node.config.command}".`,
-        nodeId: node.id,
-      });
-      continue;
-    }
-
-    for (const input of command.inputs) {
-      if (input.required && !(input.field in node.config.input)) {
-        diagnostics.push({
-          severity: 'error',
-          code: 'MISSING_INPUT',
-          message: `"${node.label}" is missing the required input "${input.field}".`,
-          nodeId: node.id,
-        });
+      for (const path of paths) {
+        const satisfied = path
+          .map((id) => graph.byId[id])
+          .filter((candidate): candidate is WorkflowNode => Boolean(candidate))
+          .some((candidate) => capabilitiesOf(candidate)[rule.requires] === true);
+        if (!satisfied) {
+          diagnostics.push({
+            severity: 'error',
+            code: rule.code,
+            message: rule.message(node.label),
+            nodeId: node.id,
+          });
+        }
       }
     }
   }
 }
 
-function checkTemplates(graph: Graph, diagnostics: Diagnostic[]): void {
-  // A node may only read from nodes that can reach it (upstream), never ahead.
-  const upstream: Record<string, Set<string>> = {};
-  const collect = (nodeId: string, seen: Set<string>): Set<string> => {
-    const cached = upstream[nodeId];
+function checkTemplates(graph: Graph, context: ValidationContext, diagnostics: Diagnostic[]): void {
+  const upstreamCache: Record<string, Set<string>> = {};
+  const upstreamOf = (nodeId: string): ReadonlySet<string> => {
+    const cached = upstreamCache[nodeId];
     if (cached) return cached;
     const result = new Set<string>();
-    for (const parent of graph.incoming[nodeId] ?? []) {
-      if (parent === nodeId || seen.has(parent)) continue;
-      result.add(parent);
-      for (const ancestor of collect(parent, new Set([...seen, nodeId]))) result.add(ancestor);
-    }
-    upstream[nodeId] = result;
+    const collect = (id: string, seen: Set<string>): void => {
+      for (const parent of graph.incoming[id] ?? []) {
+        if (parent === nodeId || seen.has(parent)) continue;
+        result.add(parent);
+        collect(parent, new Set([...seen, id]));
+      }
+    };
+    collect(nodeId, new Set([nodeId]));
+    upstreamCache[nodeId] = result;
     return result;
   };
 
-  for (const node of Object.values(graph.byId)) {
-    if (node.type !== 'action') continue;
-    const reachable = collect(node.id, new Set());
+  const triggerEventType = graph.trigger?.config.eventType;
 
-    for (const [field, template] of Object.entries(node.config.input)) {
-      for (const match of template.matchAll(TEMPLATE_PATTERN)) {
-        const expression = match[1] ?? '';
-        const reference = parseTemplateExpression(expression);
-        if (!reference) {
-          diagnostics.push({
-            severity: 'error',
-            code: 'TEMPLATE_INVALID',
-            message: `Input "${field}" uses an unsupported expression "{{${expression}}}".`,
-            nodeId: node.id,
-          });
-          continue;
-        }
-        if (reference.kind === 'node') {
-          if (!graph.byId[reference.nodeId]) {
-            diagnostics.push({
-              severity: 'error',
-              code: 'TEMPLATE_NODE_UNKNOWN',
-              message: `Input "${field}" references node "${reference.nodeId}", which does not exist.`,
-              nodeId: node.id,
-            });
-          } else if (reference.nodeId === node.id || !reachable.has(reference.nodeId)) {
-            diagnostics.push({
-              severity: 'error',
-              code: 'TEMPLATE_NOT_UPSTREAM',
-              message: `Input "${field}" references "${reference.nodeId}", which does not run before this node.`,
-              nodeId: node.id,
-            });
-          }
-        }
-      }
-    }
+  for (const node of Object.values(graph.byId)) {
+    const slots = templateSlotsOf(node);
+    if (slots.length === 0) continue;
+    diagnostics.push(
+      ...checkTemplateStrings(node.id, slots, {
+        upstreamOf,
+        nodeExists: (id) => graph.byId[id] !== undefined,
+        triggerEventType,
+        eventSchemaOf: context.eventSchemaOf,
+        outputSchemaOf: (id) => {
+          const producer = graph.byId[id];
+          return producer === undefined ? undefined : kindOf(producer).outputSchema;
+        },
+      }),
+    );
   }
 }
 
@@ -370,7 +281,7 @@ function checkTerminals(graph: Graph, diagnostics: Diagnostic[]): void {
     if (cached !== undefined) return cached;
     const node = graph.byId[nodeId];
     if (!node) return false;
-    if (node.type === 'end') {
+    if (kindOf(node).capabilities.terminal === true) {
       canReachEnd[nodeId] = true;
       return true;
     }
@@ -382,7 +293,7 @@ function checkTerminals(graph: Graph, diagnostics: Diagnostic[]): void {
   };
 
   for (const node of Object.values(graph.byId)) {
-    if (node.type === 'end') continue;
+    if (kindOf(node).capabilities.terminal === true) continue;
     if (!walk(node.id, new Set())) {
       diagnostics.push({
         severity: 'error',
@@ -409,37 +320,8 @@ function checkNodeConfigs(definition: WorkflowDefinition, context: ValidationCon
     }
   }
 
-  const trigger = definition.nodes.find((node) => node.type === 'trigger');
-  if (trigger && !context.eventTypes.includes(trigger.config.eventType)) {
-    diagnostics.push({
-      severity: 'error',
-      code: 'UNKNOWN_EVENT',
-      message: `Unknown trigger event "${trigger.config.eventType}".`,
-      nodeId: trigger.id,
-    });
-  }
-
   for (const node of definition.nodes) {
-    if (node.type === 'ai_decision') {
-      for (const tool of node.config.tools) {
-        if (!context.tools.some((candidate) => candidate.id === tool)) {
-          diagnostics.push({
-            severity: 'error',
-            code: 'UNKNOWN_TOOL',
-            message: `Unknown tool "${tool}" on the AI decision node.`,
-            nodeId: node.id,
-          });
-        }
-      }
-    }
-    if (node.type === 'human_approval' && node.config.timeoutMinutes > 1440) {
-      diagnostics.push({
-        severity: 'warning',
-        code: 'LONG_APPROVAL_TIMEOUT',
-        message: `Approvals waiting longer than 24h will escalate slowly; ${node.config.timeoutMinutes} minutes configured.`,
-        nodeId: node.id,
-      });
-    }
+    diagnostics.push(...configRulesFor(node, context));
   }
 }
 
@@ -454,10 +336,10 @@ export function validateWorkflow(
   checkPorts(graph, diagnostics);
   const cyclic = detectCycles(graph, diagnostics);
   checkReachability(graph, diagnostics);
-  checkTemplates(graph, diagnostics);
+  checkTemplates(graph, context, diagnostics);
   if (!cyclic) {
     checkTerminals(graph, diagnostics);
-    checkAuthority(graph, context, diagnostics);
+    checkAuthority(graph, diagnostics);
   }
 
   return diagnostics;

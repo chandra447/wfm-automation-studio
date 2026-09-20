@@ -1,7 +1,6 @@
 import type { CanvasLayout, Diagnostic, WorkflowDefinition } from '@wfm/workflows';
-import type { TriggerDescriptor } from '@wfm/contracts';
 
-export type { TriggerDescriptor };
+export type { DataCatalogue, ModelDescriptor, TriggerDescriptor } from '@wfm/contracts';
 
 /**
  * Mirrors the studio API's workflow DTOs (services/studio-api engine contract)

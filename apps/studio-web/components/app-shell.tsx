@@ -6,7 +6,7 @@ import { demoActors, useDemoActor } from './demo-actor-provider';
 import { cn } from '@/lib/utils';
 
 const links = [
-  { href: '/', label: 'Overview' },
+  { href: '/', label: 'Dashboard' },
   { href: '/builder', label: 'Workflow builder' },
   { href: '/triggers', label: 'Triggers' },
   { href: '/runs', label: 'Runs' },

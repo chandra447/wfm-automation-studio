@@ -19,7 +19,31 @@ scripts/verify.sh
   Result                   all properties verified
 ```
 
-94 tests across 16 files (`bun test packages services`), including one that throws an engine away mid-approval and finishes the run on a second instance, plus 8 end-to-end scenarios against the running stack. The UI was exercised in a real browser, not just built: the canvas renders the compiled graph, deleting the approval node disables Publish with the offending node named, the approval card shows the rationale, evidence and pay impact, and approving resumes the run to `succeeded` with the shift moving to `offered`.
+128 tests across 21 files (`bun test packages services`), including one that throws an engine away mid-approval and finishes the run on a second instance, plus 8 end-to-end scenarios against the running stack.
+
+Feature-level proof, on top of the above:
+
+```
+scripts/verify-features.sh
+  1. Platform provider     PASS provider: the platform provider runs the workflow
+  2. Bring your own        PASS provider: a customer-supplied provider is used
+  3. Rules fallback        PASS provider: no provider configured falls back to the rules proposer
+  4. Model catalogue       PASS models: every offered model is declared in config/models.jsonl
+                           PASS models: a workflow naming an unknown model is rejected at save time
+  5. Token accounting      PASS tokens: run detail reports the provider usage
+                           PASS tokens: dashboard totals match the run detail
+  6. Dashboard             PASS dashboard: run counts match SQL aggregates
+  7. Run input and output  PASS run detail: the trigger payload is exposed as input
+                           PASS run detail: the delivered result is exposed as output
+  8. Workflow reuse        PASS reuse: a new workflow can be created from an existing one
+  9. References, artifacts PASS references: a run resolves {{input.payload.*}} and context paths
+ 10. Node-kind extension   PASS extension: a new node kind is one file plus registration lines
+ 11. Domain outcome        PASS outcome: the domain service reflects the workflow action
+  Result                   all 18 feature properties verified
+```
+
+Every provider check runs against the real vendor configured in `.env`. The run detail's token
+totals are compared against the `llm_calls` rows, not against a number the engine computed twice. The UI was exercised in a real browser, not just built: the canvas renders the compiled graph, deleting the approval node disables Publish with the offending node named, the approval card shows the rationale, evidence and pay impact, and approving resumes the run to `succeeded` with the shift moving to `offered`.
 
 | | |
 |---|---|
@@ -32,6 +56,11 @@ scripts/verify.sh
 - **Platform invariants over user freedom.** The validator refuses a definition where a pay-affecting action is reachable without a policy check and a human approval on every path.
 - **Human-in-the-loop that survives reality.** Approvals are measured in hours. The graph checkpoints into Postgres, so a restart does not lose a parked run, and a timeout escalates instead of auto-approving.
 - **Engineering the failure paths.** Transactional outbox, at-least-once delivery with dedupe, retries with backoff, dead letters, and idempotent commands. Every one of these is exercised by a test.
+- **Bring your own model.** A tenant picks the platform's endpoint, their own OpenAI-compatible base URL, or Anthropic, with a key stored encrypted and never read back. Only models declared in `config/models.jsonl` are offered, and a workflow naming anything else is refused at save time.
+- **Cost you can check.** Every call records the vendor's own token counts, so the run detail, the run list, and the dashboard all show the same numbers, priced from the catalogue.
+- **Data in the builder.** The canvas lists the trigger event's fields with sample values and inserts `{{...}}` references into prompts, action inputs, and artifact bodies. References are validated at save time against the event's published schema.
+- **Artifacts.** A run can render a document from its own data and attach it, which is what the run detail shows as its delivered output.
+- **Extension by declaration.** A node kind is one file plus registration lines: its config schema, ports, capabilities, canvas fields, summary, and template slots in one place. The validator's platform invariants are written against capabilities, so a new kind inherits pay-safety rules without new validator code.
 
 ## Architecture
 
@@ -72,15 +101,22 @@ bun run seed              # demo tenant, staff, shifts, timesheet, workflows
 bun run dev               # services, engine, worker, and the studio at :4104
 ```
 
+The platform provider reads `PLATFORM_LLM_BASE_URL`, `PLATFORM_LLM_API_KEY`, and `PLATFORM_LLM_MODEL`
+from `.env`; `LLM_CONFIG_SECRET` encrypts any customer-supplied key; `config/models.jsonl` is the
+allow-list of models the studio offers.
+
 Open http://127.0.0.1:4104.
 
 To prove the whole thing without clicking, run:
 
 ```bash
-scripts/verify.sh
+scripts/verify.sh            # infra, migrations, seed, typecheck, services, scenarios
+scripts/verify-features.sh   # provider, catalogue, tokens, dashboard, reuse, artifacts, extension
 ```
 
-That brings up infra, migrates, seeds, boots the four processes, runs the end-to-end scenarios, and exits non-zero if any property fails.
+`verify.sh` brings up infra, migrates, seeds, boots the four processes, runs the end-to-end
+scenarios, and exits non-zero if any property fails. `verify-features.sh` assumes the stack is up and
+checks the feature set above against it.
 
 ## The two demo scenarios
 
@@ -98,13 +134,14 @@ Both are driven by the services, not by a test hook. The simulator calls the sam
 | `docs/adr/` | Nine decisions with their trade-offs |
 | `docs/jd-mapping.md` | Each requirement from the job description mapped to the artifact that answers it |
 | `packages/contracts` | Event envelope, event registry, API DTOs, actor context, condition DSL |
-| `packages/workflows` | Workflow DSL, catalogues, validator, compiler, demo templates |
+| `packages/workflows` | Node-kind registry, reference grammar and resolver, validator, compiler, demo templates |
 | `packages/eventbus` | Backbone port, Redis Streams binding, in-memory binding for tests |
 | `packages/outbox` | Transactional outbox with a publisher that claims rows safely |
 | `services/rostering-service` | Shifts, candidates, offers, swaps |
 | `services/time-attendance-service` | Clocking, breaks, timesheets, award maths, exceptions |
-| `services/studio-api` | Engine: router, orchestrator, node executors, approvals, workflow CRUD |
-| `apps/studio-web` | Next.js studio: canvas, triggers, runs, approvals |
+| `services/studio-api` | Engine: router, orchestrator, node executors, approvals, workflow CRUD, model providers, artifacts, dashboard |
+| `config/models.jsonl` | The models the studio offers, one per line, with prices |
+| `apps/studio-web` | Next.js studio: dashboard, canvas, triggers, runs, approvals, provider settings |
 | `tests/e2e` | The two scenarios plus idempotency and authorisation checks |
 
 ## How it is built
@@ -113,16 +150,20 @@ Both are driven by the services, not by a test hook. The simulator calls the sam
 - **Data.** Postgres with Drizzle ORM over Bun's built-in SQL client, one database per service. A domain write and its outbox rows share a transaction, which is what makes at-least-once publication safe.
 - **Events.** One envelope shape everywhere, versioned, tenant-partitioned, carrying correlation, causation, and trace context. Payloads carry identity, not truth, so consumers re-read current state. This mirrors the skinny webhooks Humanforce HR already emits.
 - **Execution.** BullMQ owns retries, backoff, delayed approval timeouts, and concurrency. LangGraph owns the graph and the interrupt. Our orchestrator owns the run record, the audit, and the timeline.
-- **AI.** Optional. An LLM proposer and a deterministic rules proposer sit behind one interface and produce the same structure with evidence. CI never calls a model.
+- **AI.** Optional and pluggable. `LlmProvider` is an abstract class over raw HTTP with two implementations (OpenAI-compatible, Anthropic); the deterministic rules proposer is the fallback whenever a tenant has no provider. Whichever ran, policy and human authority stay in the path, and the run records which model produced the proposal.
 
 ## Testing
 
 ```bash
-bun test packages        # contracts, DSL, validator, compiler, templates
-bun test services        # award maths, ranking, idempotency, routing, approvals
+bun test packages        # contracts, node kinds, references, validator, compiler, templates
+bun test services        # award maths, ranking, idempotency, routing, approvals, providers, dashboard
 bun test tests/e2e       # both scenarios against the running stack
 bun run typecheck
 ```
+
+The end-to-end scenarios call the configured model, so a reasoning model makes them slow. Point
+`PLATFORM_LLM_MODEL` at `deepseek/deepseek-chat-v3.1` for a fast run, or set a tenant to `none` to
+exercise the rules proposer.
 
 The end-to-end suite asserts observable state only: run rows, approval records, timeline events, and the domain services' own API responses.
 

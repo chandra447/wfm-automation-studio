@@ -13,6 +13,7 @@ const paletteIcons: Record<WorkflowNodeType, string> = {
   policy_check: '⛨',
   human_approval: '👤',
   action: '➤',
+  artifact: '📄',
   end: '■',
 };
 

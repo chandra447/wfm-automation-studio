@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@wfm/contracts": "workspace:*",
-    "@wfm/eventbus": "workspace:*"
+    "@wfm/eventbus": "workspace:*",
+    "zod": "^4.1.11"
   }
 }

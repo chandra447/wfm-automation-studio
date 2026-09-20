@@ -90,7 +90,7 @@ export async function runProposeNode(
     }
   }
 
-  const proposal = await deps.proposer.propose({ node, event: state.event, data });
+  const proposal = await deps.proposer.propose({ runId: scope.runId, node, event: state.event, data });
   const actor =
     proposal.proposer === 'llm' ? `llm:${proposal.model ?? 'unknown'}@${proposal.promptVersion ?? 'v1'}` : 'rules';
 
@@ -106,6 +106,7 @@ export async function runProposeNode(
       tools: node.config.tools,
       output: proposal.output,
       evidence: proposal.evidence,
+      model: proposal.model ?? null,
       promptVersion: proposal.promptVersion ?? null,
     },
   });
@@ -115,7 +116,13 @@ export async function runProposeNode(
     nodeId: node.id,
     title: `${node.label}: ${proposal.proposer} proposal`,
     detail: proposal.rationale,
-    data: { output: proposal.output, proposer: proposal.proposer, evidence: proposal.evidence },
+    data: {
+      output: proposal.output,
+      proposer: proposal.proposer,
+      evidence: proposal.evidence,
+      model: proposal.model ?? null,
+      promptVersion: proposal.promptVersion ?? null,
+    },
   });
   return {
     nodes: { [node.id]: { output: proposal.output, summary: proposal.rationale } },

@@ -8,6 +8,7 @@ import type { CandidateList, CreateOffersRequest, Shift, TimesheetDetailResponse
 import type { QueueGateway } from '../src/engine/scope.ts';
 import type { Orchestrator } from '../src/engine/orchestrator.ts';
 import type { DomainClients } from '../src/engine/domain-clients.ts';
+import { createLlmServices } from '../src/llm/index.ts';
 import { RulesProposer, type Proposer } from '../src/engine/nodes/proposers.ts';
 import { createEngine } from '../src/engine/index.ts';
 import type { EngineService } from '../src/engine/contract.ts';
@@ -276,12 +277,19 @@ export async function createHarness(options?: HarnessOptions): Promise<Harness> 
     stop: async () => {},
   };
 
+  const llm = await createLlmServices(db, {
+    ...process.env,
+    PLATFORM_LLM_API_KEY: '',
+    MODEL_CATALOGUE_PATH: 'config/models.jsonl',
+  });
+
   const { engine, orchestrator } = createEngine({
     sql,
     db,
     bus,
     clients: stubDomainClients(),
     proposer,
+    llm,
     checkpointer: options?.checkpointer ?? new MemorySaver(),
     queue: queueProxy,
     logger,

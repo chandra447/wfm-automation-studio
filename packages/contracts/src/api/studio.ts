@@ -24,6 +24,64 @@ export const runStatusSchema = z.enum([
   'cancelled',
 ]);
 
+/* Model, provider, and run-accounting shapes. Declared here so the run summary
+ * and the run detail below can use them. */
+
+export const llmProviderKindSchema = z.enum(['platform', 'openai-compatible', 'anthropic', 'none']);
+
+export const modelDescriptorSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  provider: z.string().min(1),
+  contextWindow: z.int().positive(),
+  maxOutputTokens: z.int().positive(),
+  jsonMode: z.boolean(),
+  inputCentsPerMillion: z.number().nonnegative(),
+  outputCentsPerMillion: z.number().nonnegative(),
+  default: z.boolean(),
+});
+
+export const providerSettingsSchema = z.object({
+  kind: llmProviderKindSchema,
+  baseUrl: z.string().nullable(),
+  model: z.string().nullable(),
+  hasApiKey: z.boolean(),
+  apiKeyLast4: z.string().nullable(),
+  platformConfigured: z.boolean(),
+  updatedAt: isoDateTimeSchema.nullable(),
+  updatedBy: z.string().nullable(),
+});
+
+export const providerSettingsRequestSchema = z.object({
+  kind: llmProviderKindSchema,
+  baseUrl: z.string().url().optional(),
+  apiKey: z.string().min(8).max(400).optional(),
+  model: z.string().min(1).max(200).optional(),
+});
+
+export const tokenUsageSchema = z.object({
+  inputTokens: z.int().nonnegative(),
+  outputTokens: z.int().nonnegative(),
+  calls: z.int().nonnegative(),
+  estimatedCostCents: z.number().nonnegative(),
+});
+
+export const artifactFormatSchema = z.enum(['markdown', 'json']);
+
+export const artifactSchema = z.object({
+  artifactId: uuidSchema,
+  runId: uuidSchema,
+  nodeId: z.string().min(1),
+  name: z.string().min(1),
+  format: artifactFormatSchema,
+  createdAt: isoDateTimeSchema,
+});
+
+export const artifactDetailSchema = artifactSchema.extend({
+  content: z.string(),
+  contentType: z.string().min(1),
+});
+
 export const runSummarySchema = z.object({
   runId: uuidSchema,
   tenantId: uuidSchema,
@@ -39,6 +97,8 @@ export const runSummarySchema = z.object({
   actionsExecuted: z.int().nonnegative(),
   summary: z.string().nullable(),
   pendingApprovalId: uuidSchema.nullable(),
+  /** What the run's model calls consumed, from the provider's own usage report. */
+  tokens: tokenUsageSchema,
 });
 
 export const runEventKindSchema = z.enum([
@@ -115,10 +175,29 @@ export const simulatorResponseSchema = z.object({
   note: z.string().min(1),
 });
 
+/** What triggered the run, which is the data the workflow could read. */
+export const runInputSchema = z.object({
+  triggerEventId: uuidSchema,
+  triggerEventType: z.string().min(1),
+  payload: z.unknown(),
+  workflowName: z.string().min(1),
+  workflowVersionNumber: z.int().positive(),
+});
+
+/** What the run delivered, which is what a reviewer checks it against. */
+export const runOutputSchema = z.object({
+  status: runStatusSchema,
+  summary: z.string().nullable(),
+  actionsExecuted: z.int().nonnegative(),
+  artifacts: z.array(artifactSchema),
+});
+
 export const runDetailSchema = z.object({
   run: runSummarySchema,
   events: z.array(runEventSchema),
   approval: approvalSchema.nullable(),
+  input: runInputSchema,
+  output: runOutputSchema,
 });
 
 export type TriggerDescriptor = z.infer<typeof triggerDescriptorSchema>;
@@ -132,3 +211,77 @@ export type DecisionResponse = z.infer<typeof decisionResponseSchema>;
 export type SimulatorScenario = z.infer<typeof simulatorScenarioSchema>;
 export type SimulatorResponse = z.infer<typeof simulatorResponseSchema>;
 export type RunDetail = z.infer<typeof runDetailSchema>;
+export type RunInput = z.infer<typeof runInputSchema>;
+export type RunOutput = z.infer<typeof runOutputSchema>;
+export type TokenUsage = z.infer<typeof tokenUsageSchema>;
+export type Artifact = z.infer<typeof artifactSchema>;
+export type ArtifactDetail = z.infer<typeof artifactDetailSchema>;
+export type ModelDescriptor = z.infer<typeof modelDescriptorSchema>;
+export type ProviderSettings = z.infer<typeof providerSettingsSchema>;
+export type ProviderSettingsRequest = z.infer<typeof providerSettingsRequestSchema>;
+export type LlmProviderKind = z.infer<typeof llmProviderKindSchema>;
+
+/* Aggregates for the dashboard, and the data the canvas can insert into a node. */
+
+export const dashboardSchema = z.object({
+  runs: z.object({
+    total: z.int().nonnegative(),
+    byStatus: z.record(z.string(), z.int().nonnegative()),
+    last24h: z.int().nonnegative(),
+    medianDurationMs: z.int().nonnegative().nullable(),
+  }),
+  tokens: tokenUsageSchema,
+  workflows: z.array(
+    z.object({
+      workflowId: uuidSchema,
+      name: z.string().min(1),
+      enabled: z.boolean(),
+      publishedVersion: z.int().positive().nullable(),
+      draftVersion: z.int().positive().nullable(),
+      runs: z.int().nonnegative(),
+      lastRunAt: isoDateTimeSchema.nullable(),
+    }),
+  ),
+});
+
+/** What the canvas can insert into a node's template fields. */
+export const dataCatalogueSchema = z.object({
+  eventType: z.string().min(1),
+  roots: z.array(
+    z.object({
+      name: z.string().min(1),
+      label: z.string().min(1),
+      description: z.string(),
+      paths: z.array(
+        z.object({
+          path: z.string().min(1),
+          label: z.string().min(1),
+          type: z.string().min(1),
+          sample: z.string(),
+        }),
+      ),
+    }),
+  ),
+});
+
+/** Creating a workflow either supplies a definition or names one to copy. */
+export const createWorkflowBodySchema = z.union([
+  z.object({
+    name: z.string().min(1).max(120),
+    description: z.string().max(500).optional(),
+    enabled: z.boolean().optional(),
+    definition: z.unknown(),
+    layout: z.unknown().optional(),
+  }),
+  z.object({
+    name: z.string().min(1).max(120),
+    description: z.string().max(500).optional(),
+    enabled: z.boolean().optional(),
+    fromWorkflowId: uuidSchema,
+    versionNumber: z.int().positive().optional(),
+  }),
+]);
+
+export type Dashboard = z.infer<typeof dashboardSchema>;
+export type DataCatalogue = z.infer<typeof dataCatalogueSchema>;
+export type CreateWorkflowBody = z.infer<typeof createWorkflowBodySchema>;

@@ -1,3 +1,4 @@
+import { defaultNodeOf, summaryOf } from '@wfm/workflows';
 import { triggerCatalog } from '@wfm/contracts';
 import {
   NODE_HEIGHT,
@@ -38,6 +39,7 @@ export const accentVarByNodeType: Record<WorkflowNodeType, string> = {
   policy_check: 'var(--color-node-policy)',
   human_approval: 'var(--color-node-approval)',
   action: 'var(--color-node-action)',
+  artifact: 'var(--color-node-artifact)',
   end: 'var(--color-node-end)',
 };
 
@@ -53,15 +55,23 @@ export function isEdgePort(value: string | null | undefined): value is EdgePort 
   return typeof value === 'string' && edgePortSchema.safeParse(value).success;
 }
 
+/**
+ * Flow nodes for the canvas. Every committed edit rebuilds this array, and
+ * React Flow drops a node's selection when the node object is replaced without
+ * a `selected` flag — so the selected id is carried through here, otherwise the
+ * inspector would close on the first keystroke of a field edit.
+ */
 export function toFlowNodes(
   definition: WorkflowDefinition,
   layout: CanvasLayout,
   grouped: Record<string, Diagnostic[]>,
+  selectedId: string | null,
 ): BuilderFlowNode[] {
   return definition.nodes.map((node) => ({
     id: node.id,
     type: NODE_TYPE,
     position: layout.positions[node.id] ?? { x: 0, y: 0 },
+    selected: node.id === selectedId,
     data: { node, diagnostics: grouped[node.id] ?? [] },
   }));
 }
@@ -161,26 +171,19 @@ export function clearLocalDraft(workflowId: string): void {
 }
 
 export function nodeSummary(node: WorkflowNode): string {
-  switch (node.type) {
-    case 'trigger':
-      return node.config.conditions.length > 0
-        ? `${node.config.eventType} · ${node.config.conditions.length} filter${node.config.conditions.length === 1 ? '' : 's'}`
-        : node.config.eventType;
-    case 'condition': {
-      const base = node.config.conditions.length === 1 ? '1 condition' : `${node.config.conditions.length} conditions`;
-      return node.config.description.length > 0 ? `${base} · ${node.config.description}` : base;
-    }
-    case 'ai_decision':
-      return `${node.config.tools.length} tool${node.config.tools.length === 1 ? '' : 's'}`;
-    case 'policy_check':
-      return node.config.checks.join(' · ');
-    case 'human_approval':
-      return `${node.config.role} · ${node.config.timeoutMinutes} min`;
-    case 'action':
-      return node.config.command;
-    case 'end':
-      return node.config.outcome;
-  }
+  return summaryOf(node);
+}
+
+/**
+ * Applies one field edit. The inspector writes a single key that the kind's own
+ * field list declares; the node union cannot express "one key at a time", so
+ * this is the one place a loose form value enters a node config.
+ */
+export function withConfigKey(node: WorkflowNode, key: string, value: unknown): WorkflowNode {
+  const config: Record<string, unknown> = { ...node.config };
+  if (value === undefined) delete config[key];
+  else config[key] = value;
+  return { ...node, config } as WorkflowNode;
 }
 
 export function nextNodeId(existingIds: readonly string[], nodeType: WorkflowNodeType): string {
@@ -211,57 +214,7 @@ export function defaultEventType(): string {
 }
 
 export function defaultNode(nodeType: WorkflowNodeType): WorkflowNode {
-  switch (nodeType) {
-    case 'trigger':
-      return {
-        id: 'trigger',
-        type: 'trigger',
-        label: 'When it happens',
-        config: { eventType: defaultEventType(), conditions: [] },
-      };
-    case 'condition':
-      return {
-        id: 'condition',
-        type: 'condition',
-        label: 'If…',
-        config: { description: '', conditions: [{ field: 'payload.hoursUntilStart', op: 'lt', value: 12 }] },
-      };
-    case 'ai_decision':
-      return {
-        id: 'ai_decision',
-        type: 'ai_decision',
-        label: 'AI decision',
-        config: {
-          goal: 'Describe what the AI should decide and which trade-off it may accept.',
-          tools: ['shift.get'],
-          output: 'candidate_choice',
-          mustCiteEvidence: true,
-        },
-      };
-    case 'policy_check':
-      return {
-        id: 'policy_check',
-        type: 'policy_check',
-        label: 'Policy check',
-        config: { checks: ['cost_delta_cap'], costCapCents: 0, escalateOnFailure: true },
-      };
-    case 'human_approval':
-      return {
-        id: 'human_approval',
-        type: 'human_approval',
-        label: 'Human approval',
-        config: {
-          role: 'roster_manager',
-          timeoutMinutes: 240,
-          escalateTo: 'operations_lead',
-          show: ['rationale', 'evidence'],
-        },
-      };
-    case 'action':
-      return { id: 'action', type: 'action', label: 'Action', config: { command: 'rostering.send_offers', input: {} } };
-    case 'end':
-      return { id: 'end', type: 'end', label: 'End', config: { outcome: 'completed' } };
-  }
+  return defaultNodeOf(nodeType, 'pending_id');
 }
 
 export type DemoTemplateId = 'coverage-rescue' | 'payroll-exception';

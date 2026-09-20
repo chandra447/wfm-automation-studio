@@ -1,18 +1,22 @@
-import type { WorkflowDefinition, WorkflowNode, WorkflowNodeType } from './dsl.ts';
+import { capabilitiesOf } from './kinds/registry.ts';
 import { assertValidWorkflow } from './validate.ts';
+import type { WorkflowDefinition, WorkflowNodeType } from './dsl.ts';
 
 /**
  * Compiles a validated definition into a GraphSpec: a flat, executable
  * description the engine maps onto its graph runtime. Keeping the spec free of
  * runtime types means the compiler is unit-testable and the graph runtime is
  * replaceable.
+ *
+ * The groupings below read capabilities, not kinds, so a new kind lands in the
+ * right bucket by declaring what it is.
  */
 
 export interface GraphSpecNode {
   id: string;
   type: WorkflowNodeType;
   label: string;
-  config: WorkflowNode['config'];
+  config: unknown;
   /** Outgoing transitions keyed by port; `always` is the default path. */
   transitions: Array<{ port: string; to: string }>;
 }
@@ -25,6 +29,8 @@ export interface GraphSpec {
   approvalNodeIds: string[];
   /** Nodes that write to a domain service; used for audit and dry-run handling. */
   actionNodeIds: string[];
+  /** Nodes that render an artifact from run data. */
+  artifactNodeIds: string[];
 }
 
 export class WorkflowCompileError extends Error {
@@ -47,14 +53,19 @@ export function compileWorkflow(definition: WorkflowDefinition): GraphSpec {
     transitions: outgoing[node.id] ?? [],
   }));
 
-  const trigger = definition.nodes.find((node) => node.type === 'trigger');
+  const trigger = definition.nodes.find((node) => capabilitiesOf(node).isTrigger === true);
   if (!trigger) throw new WorkflowCompileError('definition has no trigger node');
+
+  const withCapability = (
+    capability: 'terminal' | 'providesApproval' | 'mutatesDomain' | 'producesArtifact',
+  ): string[] => definition.nodes.filter((node) => capabilitiesOf(node)[capability] === true).map((node) => node.id);
 
   return {
     entry: trigger.id,
     nodes,
-    terminals: nodes.filter((node) => node.type === 'end').map((node) => node.id),
-    approvalNodeIds: nodes.filter((node) => node.type === 'human_approval').map((node) => node.id),
-    actionNodeIds: nodes.filter((node) => node.type === 'action').map((node) => node.id),
+    terminals: withCapability('terminal'),
+    approvalNodeIds: withCapability('providesApproval'),
+    actionNodeIds: withCapability('mutatesDomain'),
+    artifactNodeIds: withCapability('producesArtifact'),
   };
 }

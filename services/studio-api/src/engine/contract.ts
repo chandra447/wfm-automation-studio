@@ -1,5 +1,7 @@
 import type {
   ActorContext,
+  ArtifactDetail,
+  DataCatalogue,
   Approval,
   DecisionRequest,
   DecisionResponse,
@@ -12,6 +14,8 @@ import type {
   TriggerDescriptor,
 } from '@wfm/contracts';
 import type { CanvasLayout, Diagnostic, WorkflowDefinition } from '@wfm/workflows';
+
+export type { ArtifactDetail, DataCatalogue } from '@wfm/contracts';
 
 /**
  * The engine's public surface. The HTTP layer in app.ts owns transport only;
@@ -60,6 +64,13 @@ export interface WorkflowMutationResult {
   diagnostics: Diagnostic[];
 }
 
+export interface CreateFromRequest {
+  name: string;
+  description?: string;
+  fromWorkflowId: string;
+  versionNumber?: number;
+}
+
 export interface RunFilter {
   workflowId?: string;
   status?: RunStatus;
@@ -80,6 +91,10 @@ export interface EngineService {
   listApprovals: (context: ActorContext, status?: Approval['status']) => Promise<Approval[]>;
   decideApproval: (context: ActorContext, approvalId: string, request: DecisionRequest) => Promise<DecisionResponse>;
   simulate: (context: ActorContext, scenario: SimulatorScenario) => Promise<SimulatorResponse>;
+  getArtifact: (context: ActorContext, artifactId: string) => Promise<ArtifactDetail>;
+  dataCatalogue: (context: ActorContext, eventType: string) => Promise<DataCatalogue>;
+  /** Creates a workflow by copying another one's definition and layout. */
+  createWorkflowFrom: (context: ActorContext, request: CreateFromRequest) => Promise<WorkflowMutationResult>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
 }

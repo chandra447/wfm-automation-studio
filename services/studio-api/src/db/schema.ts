@@ -155,3 +155,54 @@ export const auditLog = pgTable(
   },
   (table) => [index('audit_run_idx').on(table.runId)],
 );
+
+/**
+ * One row per tenant: which model provider the studio should use. A customer
+ * key is stored encrypted and is never read back out, only its last four
+ * characters.
+ */
+export const llmProviderSettings = pgTable('llm_provider_settings', {
+  tenantId: uuid('tenant_id').primaryKey(),
+  kind: text('kind', { enum: ['platform', 'openai-compatible', 'anthropic', 'none'] }).notNull(),
+  baseUrl: text('base_url'),
+  model: text('model'),
+  apiKeyCiphertext: text('api_key_ciphertext'),
+  apiKeyLast4: text('api_key_last4'),
+  updatedBy: text('updated_by').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** One row per model call, so tokens and cost stay auditable per run and node. */
+export const llmCalls = pgTable(
+  'llm_calls',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    tenantId: uuid('tenant_id').notNull(),
+    runId: uuid('run_id').notNull(),
+    nodeId: text('node_id').notNull(),
+    providerKind: text('provider_kind').notNull(),
+    model: text('model').notNull(),
+    inputTokens: integer('input_tokens').notNull().default(0),
+    outputTokens: integer('output_tokens').notNull().default(0),
+    latencyMs: integer('latency_ms').notNull().default(0),
+    status: text('status', { enum: ['ok', 'error'] }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('llm_calls_run_idx').on(table.runId), index('llm_calls_tenant_idx').on(table.tenantId)],
+);
+
+/** A document a run rendered from its own data. */
+export const artifacts = pgTable(
+  'artifacts',
+  {
+    artifactId: uuid('artifact_id').primaryKey(),
+    tenantId: uuid('tenant_id').notNull(),
+    runId: uuid('run_id').notNull(),
+    nodeId: text('node_id').notNull(),
+    name: text('name').notNull(),
+    format: text('format', { enum: ['markdown', 'json'] }).notNull(),
+    content: text('content').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('artifacts_run_idx').on(table.runId)],
+);

@@ -97,9 +97,12 @@ async function candidatesData(): Promise<Record<string, unknown>> {
   };
 }
 
+const RUN_ID = '11111111-1111-4111-8111-111111111111';
+
 describe('rules proposer', () => {
   test('candidate choice output is schema-valid and excludes ineligible employees', async () => {
     const result = await proposer.propose({
+      runId: RUN_ID,
       node: candidateNode,
       event: cancelledEvent,
       data: await candidatesData(),
@@ -116,6 +119,7 @@ describe('rules proposer', () => {
 
   test('timesheet adjustment output is schema-valid and award-consistent', async () => {
     const result = await proposer.propose({
+      runId: RUN_ID,
       node: adjustmentNode,
       event: exceptionEvent,
       data: { 'timesheet.get': timesheetFixture },
@@ -141,7 +145,7 @@ describe('rules proposer', () => {
       'shift.candidates': ineligibleOnly,
     };
     await proposer
-      .propose({ node: candidateNode, event: cancelledEvent, data })
+      .propose({ runId: RUN_ID, node: candidateNode, event: cancelledEvent, data })
       .then(
         () => {
           throw new Error('proposer should have refused');

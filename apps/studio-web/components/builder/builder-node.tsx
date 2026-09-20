@@ -13,6 +13,7 @@ const typeLabels: Record<BuilderFlowNode['data']['node']['type'], string> = {
   policy_check: 'Policy check',
   human_approval: 'Human approval',
   action: 'Action',
+  artifact: 'Artifact',
   end: 'End',
 };
 
