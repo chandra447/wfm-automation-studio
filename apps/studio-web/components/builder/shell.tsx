@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import type { Icon } from '@phosphor-icons/react';
 import { Plus, X } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
@@ -92,6 +92,78 @@ function RailButton({ item, active, onClick }: { item: RailItem; active: boolean
   );
 }
 
+/**
+ * A panel that docks to the left edge with the canvas beside it, rather than
+ * floating over it. The chat wants this: it is a conversation the author reads
+ * while watching the graph, so the two share the screen and the divider between
+ * them moves.
+ */
+export interface DockedPane {
+  id: string;
+  /** Narrower than this and the transcript wraps to unreadable; wider and the canvas is a sliver. */
+  minWidth: number;
+  maxWidth: number;
+}
+
+const DOCKED_WIDTH_KEY = 'wfm.builder.dockedWidth';
+
+/** The divider. Pointer capture keeps the drag alive over the canvas. */
+function ResizeDivider({ width, min, max, onWidth }: { width: number; min: number; max: number; onWidth: (width: number) => void }) {
+  const start = useRef<{ x: number; width: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const move = useCallback(
+    (event: PointerEvent) => {
+      const origin = start.current;
+      if (origin === null) return;
+      onWidth(Math.round(Math.min(max, Math.max(min, origin.width + (event.clientX - origin.x)))));
+    },
+    [max, min, onWidth],
+  );
+
+  useEffect(() => {
+    if (!dragging) return;
+    const stop = () => setDragging(false);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+    };
+  }, [dragging, move]);
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize the chat pane"
+      aria-valuenow={width}
+      tabIndex={0}
+      onPointerDown={(event: ReactPointerEvent<HTMLDivElement>) => {
+        start.current = { x: event.clientX, width };
+        setDragging(true);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'ArrowLeft') onWidth(Math.max(min, width - 24));
+        if (event.key === 'ArrowRight') onWidth(Math.min(max, width + 24));
+      }}
+      className={cn(
+        'group relative w-px shrink-0 cursor-col-resize bg-[var(--color-border-subtle)]',
+        dragging && 'bg-[var(--color-primary)]',
+      )}
+    >
+      <span
+        aria-hidden
+        className={cn(
+          'absolute inset-y-0 -left-1 -right-1',
+          'group-hover:bg-[var(--color-primary)]/30',
+          dragging && 'bg-[var(--color-primary)]/30',
+        )}
+      />
+    </div>
+  );
+}
+
 export interface BuilderShellProps {
   rail: readonly RailItem[];
   /** Rail ids to tint; a panel and the validation pill can both be active. */
@@ -112,6 +184,8 @@ export interface BuilderShellProps {
   bottomRight?: ReactNode;
   /** Floating panels anchored to the right edge, stacked top to bottom. */
   side?: ReactNode;
+  /** The panel that takes the left edge with the canvas beside it, when active. */
+  docked?: DockedPane;
   /** The canvas. Everything else in this component floats over it. */
   children: ReactNode;
 }
@@ -135,13 +209,53 @@ export function BuilderShell({
   bottomLeft,
   bottomRight,
   side,
+  docked,
   children,
 }: BuilderShellProps) {
   const mainRail = rail.filter((item) => item.group !== 'bottom');
   const bottomRail = rail.filter((item) => item.group === 'bottom');
+  const isDocked = docked !== undefined && activePanel === docked.id;
+
+  const [dockedWidth, setDockedWidth] = useState(() => {
+    if (typeof window === 'undefined') return 380;
+    const stored = Number(window.localStorage.getItem(DOCKED_WIDTH_KEY));
+    return Number.isFinite(stored) && stored > 0 ? stored : 380;
+  });
+  useEffect(() => {
+    if (isDocked) window.localStorage.setItem(DOCKED_WIDTH_KEY, String(dockedWidth));
+  }, [isDocked, dockedWidth]);
 
   return (
     <div className="relative h-[calc(100vh-3.5625rem)] min-h-0 overflow-hidden bg-[var(--color-canvas)]">
+      {isDocked && docked !== undefined ? (
+        <div className="absolute inset-y-0 left-0 z-30 flex" style={{ width: dockedWidth }}>
+          <div className="flex min-w-0 flex-1 flex-col">
+            {panels
+              .filter((entry) => entry.id === docked.id)
+              .map((entry) => (
+                <FloatingPanel
+                  key={entry.id}
+                  title={entry.title}
+                  onClose={onClosePanel}
+                  className="w-full flex-1 rounded-none border-y-0 border-l-0 shadow-none"
+                >
+                  {entry.content}
+                </FloatingPanel>
+              ))}
+          </div>
+          <ResizeDivider
+            width={dockedWidth}
+            min={docked.minWidth}
+            max={docked.maxWidth}
+            onWidth={setDockedWidth}
+          />
+        </div>
+      ) : null}
+
+      {/* Everything else — the canvas, the rail, the floating panels — lives to
+          the right of the docked pane, so the graph is beside the conversation
+          rather than underneath it. */}
+      <div className="absolute inset-y-0 right-0" style={{ left: isDocked ? dockedWidth : 0 }}>
       <div className="absolute inset-0">{children}</div>
 
       {/* Top chrome floats as one column so a banner lands under the top bar
@@ -192,7 +306,7 @@ export function BuilderShell({
           activePanel === null && 'hidden',
         )}
       >
-        {panels.map((entry) => (
+        {panels.filter((entry) => entry.id !== docked?.id).map((entry) => (
           <FloatingPanel
             key={entry.id}
             title={entry.title}
@@ -212,6 +326,7 @@ export function BuilderShell({
 
       {bottomLeft !== undefined && <div className="absolute bottom-4 left-4 z-30">{bottomLeft}</div>}
       {bottomRight !== undefined && <div className="absolute right-[11.5rem] bottom-4 z-30">{bottomRight}</div>}
+      </div>
     </div>
   );
 }

@@ -201,6 +201,7 @@ function FlowCanvas({
   onNodeChange,
   onViewportChange,
   onNodesMeasured,
+  chatDocked,
   connectionAllowed,
 }: {
   flowNodes: BuilderFlowNode[];
@@ -218,6 +219,8 @@ function FlowCanvas({
   onNodeChange: (node: WorkflowNode, coalesceKey?: string) => void;
   /** Where React Flow's measurement lands, so the minimap can draw the cards. */
   onNodesMeasured: (measured: readonly { id: string; dimensions: { width: number; height: number } }[]) => void;
+  /** True while the chat holds the left edge, which narrows the canvas. */
+  chatDocked: boolean;
   onViewportChange: (viewport: CanvasLayout['viewport']) => void;
   /** Whether a drag may land. The rule is the DSL's, so it is asked once, above. */
   connectionAllowed: (connection: Connection | Edge) => boolean;
@@ -299,7 +302,7 @@ function FlowCanvas({
           <SelectionSync onSelect={onSelectNode} />
         </ReactFlow>
       </BuilderNodeProvider>
-      {selectedId === null && (
+      {selectedId === null && !chatDocked && (
         <p className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-xl border border-[var(--color-border-subtle)] bg-[var(--color-surface)] px-3 py-1.5 text-[10px] text-[var(--color-ink-faint)] shadow-lg">
           Select a node to edit · ⌘Z undo · ⌘⇧Z redo · ⌘S save · Delete removes the selection
         </p>
@@ -719,6 +722,7 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
     <TemplateFieldProvider>
       <ReactFlowProvider>
         <BuilderShell
+          docked={{ id: 'chat', minWidth: 320, maxWidth: 720 }}
           rail={rail}
           active={activeRail}
           onActivate={(id) => {
@@ -845,6 +849,7 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
             onNodeChange={store.updateNode}
             onViewportChange={store.updateViewport}
             onNodesMeasured={onNodesMeasured}
+            chatDocked={panelId === 'chat'}
             connectionAllowed={connectionAllowed}
           />
         </BuilderShell>
