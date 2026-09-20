@@ -1,10 +1,11 @@
 import { candidateListSchema, shiftSchema, timesheetDetailResponseSchema, type AnyWfmEvent } from '@wfm/contracts';
 import type { z } from 'zod';
-import { policyCheckLabels } from '@wfm/workflows';
+import { policyCheckLabels, type WorkflowNode } from '@wfm/workflows';
 import { appendAudit, appendRunEvent } from '../run-store.ts';
 import type { RunScope, RunStateFields } from '../state.ts';
 import type { ExecutorDeps } from './context.ts';
-import { candidateChoiceOutputSchema, coveragePlanOutputSchema, timesheetAdjustmentOutputSchema } from './proposers.ts';
+import { coveragePlanOutputSchema } from './proposers.ts';
+import { candidateChoiceOutputSchema, timesheetAdjustmentOutputSchema } from '@wfm/workflows';
 
 export interface PolicyCheckResult {
   kind: string;
@@ -44,9 +45,10 @@ interface CheckInputs {
 export async function runPolicyNode(
   scope: RunScope,
   deps: ExecutorDeps,
-  node: PolicyCheckNode,
+  node: WorkflowNode,
   state: RunStateFields,
 ): Promise<Pick<RunStateFields, 'nodes' | 'cursor' | 'decision'>> {
+  if (node.type !== 'policy_check') throw new Error(`${node.type} executor reached with a ${node.type} node`);
   const chosen = chosenEmployeeIds(state);
   const costDeltaCents = proposalCostDelta(state);
 
@@ -244,32 +246,33 @@ function overtimeRiskCheck(input: CheckInputs): PolicyCheckResult {
 
 function chosenEmployeeIds(state: RunStateFields): string[] {
   for (const value of Object.values(state.nodes)) {
-    const output = value?.output;
-    if (isProposalWithEmployees(output)) return output.employeeIds;
+    if (isProposalWithEmployees(value?.output)) return value.output.employeeIds;
   }
   return [];
 }
 
-/** The most recent upstream ai_decision adjustment proposal, if any. */
+interface EmployeeProposal {
+  employeeIds: string[];
+  topCandidateId: string;
+  costDeltaCents: number;
+}
+
 function findTimesheetAdjustmentProposal(state: RunStateFields): z.infer<typeof timesheetAdjustmentOutputSchema> | null {
   for (const value of Object.values(state.nodes)) {
-    const output = value?.output;
-    const parsed = timesheetAdjustmentOutputSchema.safeParse(output);
+    const parsed = timesheetAdjustmentOutputSchema.safeParse(value?.output);
     if (parsed.success) return parsed.data;
   }
   return null;
 }
 
-function isProposalWithEmployees(value: unknown): value is { employeeIds: string[]; topCandidateId: string } {
-  const parsed = candidateChoiceOutputSchema.safeParse(value);
-  if (parsed.success) return true;
+function isProposalWithEmployees(value: unknown): value is EmployeeProposal {
+  if (candidateChoiceOutputSchema.safeParse(value).success) return true;
   return coveragePlanOutputSchema.safeParse(value).success;
 }
 
 function proposalCostDelta(state: RunStateFields): number | null {
   for (const value of Object.values(state.nodes)) {
-    const output = value?.output;
-    if (isProposalWithEmployees(output)) return output.costDeltaCents;
+    if (isProposalWithEmployees(value?.output)) return value.output.costDeltaCents;
   }
   return null;
 }

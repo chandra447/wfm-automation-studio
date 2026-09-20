@@ -1,14 +1,13 @@
-import { and, asc, eq, gt, sql as dsql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, sql as dsql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import type { Approval, RunEvent, RunStatus, RunSummary } from '@wfm/contracts';
 import * as schema from '../db/schema.ts';
-import type { approvals, auditLog, runEvents, runs, workflowVersions, workflows } from '../db/schema.ts';
 
-export type RunRow = typeof runs.$inferSelect;
-export type RunEventRow = typeof runEvents.$inferSelect;
-export type ApprovalRow = typeof approvals.$inferSelect;
-export type WorkflowRow = typeof workflows.$inferSelect;
-export type WorkflowVersionRow = typeof workflowVersions.$inferSelect;
+export type RunRow = typeof schema.runs.$inferSelect;
+export type RunEventRow = typeof schema.runEvents.$inferSelect;
+export type ApprovalRow = typeof schema.approvals.$inferSelect;
+export type WorkflowRow = typeof schema.workflows.$inferSelect;
+export type WorkflowVersionRow = typeof schema.workflowVersions.$inferSelect;
 
 export type RunDb = PostgresJsDatabase<typeof schema>;
 
@@ -43,17 +42,17 @@ const MAX_SEQ_RETRIES = 5;
 export async function appendRunEvent(db: RunDb, input: AppendRunEventInput): Promise<RunEventRow> {
   for (let attempt = 0; ; attempt += 1) {
     const rows = await db
-      .insert(runEvents)
+      .insert(schema.runEvents)
       .values({
         runId: input.runId,
-        seq: dsql`(SELECT COALESCE(MAX(${runEvents.seq}), -1) + 1 FROM ${runEvents} WHERE ${runEvents.runId} = ${input.runId})`,
+        seq: dsql`(SELECT COALESCE(MAX(${schema.runEvents.seq}), -1) + 1 FROM ${schema.runEvents} WHERE ${schema.runEvents.runId} = ${input.runId})`,
         kind: input.kind,
         ...(input.nodeId !== undefined ? { nodeId: input.nodeId } : {}),
         title: input.title,
         detail: input.detail ?? '',
         data: input.data,
       })
-      .onConflictDoNothing({ target: [runEvents.runId, runEvents.seq] })
+      .onConflictDoNothing({ target: [schema.runEvents.runId, schema.runEvents.seq] })
       .returning();
     const row = rows[0];
     if (row) return row;
@@ -73,7 +72,7 @@ export interface AuditInput {
 
 /** Append-only audit trail; nothing ever updates or deletes these rows. */
 export async function appendAudit(db: RunDb, input: AuditInput): Promise<void> {
-  await db.insert(auditLog).values({
+  await db.insert(schema.auditLog).values({
     tenantId: input.tenantId,
     runId: input.runId ?? null,
     workflowId: input.workflowId ?? null,
@@ -82,6 +81,13 @@ export async function appendAudit(db: RunDb, input: AuditInput): Promise<void> {
     actor: input.actor,
     detail: input.detail,
   });
+}
+
+export async function countAction(db: RunDb, runId: string): Promise<void> {
+  await db
+    .update(schema.runs)
+    .set({ actionsExecuted: dsql`${schema.runs.actionsExecuted} + 1` })
+    .where(eq(schema.runs.runId, runId));
 }
 
 export type RunPatch = Partial<{
@@ -93,30 +99,30 @@ export type RunPatch = Partial<{
 }>;
 
 export async function updateRun(db: RunDb, runId: string, patch: RunPatch): Promise<RunRow | undefined> {
-  const rows = await db.update(runs).set(patch).where(eq(runs.runId, runId)).returning();
+  const rows = await db.update(schema.runs).set(patch).where(eq(schema.runs.runId, runId)).returning();
   return rows[0];
 }
 
 export async function getRunRow(db: RunDb, runId: string): Promise<RunRow | undefined> {
-  const rows = await db.select().from(runs).where(eq(runs.runId, runId)).limit(1);
+  const rows = await db.select().from(schema.runs).where(eq(schema.runs.runId, runId)).limit(1);
   return rows[0];
 }
 
 export async function getRunEvents(db: RunDb, runId: string, afterId = 0, limit = 500): Promise<RunEventRow[]> {
   return db
     .select()
-    .from(runEvents)
-    .where(and(eq(runEvents.runId, runId), gt(runEvents.id, afterId)))
-    .orderBy(asc(runEvents.id))
+    .from(schema.runEvents)
+    .where(and(eq(schema.runEvents.runId, runId), gt(schema.runEvents.id, afterId)))
+    .orderBy(asc(schema.runEvents.id))
     .limit(limit);
 }
 
 export async function getFirstRunEvent(db: RunDb, runId: string, kind: RunEventKind): Promise<RunEventRow | undefined> {
   const rows = await db
     .select()
-    .from(runEvents)
-    .where(and(eq(runEvents.runId, runId), eq(runEvents.kind, kind)))
-    .orderBy(asc(runEvents.seq))
+    .from(schema.runEvents)
+    .where(and(eq(schema.runEvents.runId, runId), eq(schema.runEvents.kind, kind)))
+    .orderBy(asc(schema.runEvents.seq))
     .limit(1);
   return rows[0];
 }
@@ -124,22 +130,32 @@ export async function getFirstRunEvent(db: RunDb, runId: string, kind: RunEventK
 export async function listApprovalsForNode(db: RunDb, runId: string, nodeId: string): Promise<ApprovalRow[]> {
   return db
     .select()
-    .from(approvals)
-    .where(and(eq(approvals.runId, runId), eq(approvals.nodeId, nodeId)))
-    .orderBy(asc(approvals.requestedAt));
+    .from(schema.approvals)
+    .where(and(eq(schema.approvals.runId, runId), eq(schema.approvals.nodeId, nodeId)))
+    .orderBy(asc(schema.approvals.requestedAt));
 }
 
 export async function getApprovalRow(db: RunDb, approvalId: string): Promise<ApprovalRow | undefined> {
-  const rows = await db.select().from(approvals).where(eq(approvals.approvalId, approvalId)).limit(1);
+  const rows = await db.select().from(schema.approvals).where(eq(schema.approvals.approvalId, approvalId)).limit(1);
   return rows[0];
 }
 
 export async function getPendingApproval(db: RunDb, runId: string): Promise<ApprovalRow | undefined> {
   const rows = await db
     .select()
-    .from(approvals)
-    .where(and(eq(approvals.runId, runId), eq(approvals.status, 'pending')))
-    .orderBy(asc(approvals.requestedAt))
+    .from(schema.approvals)
+    .where(and(eq(schema.approvals.runId, runId), eq(schema.approvals.status, 'pending')))
+    .orderBy(asc(schema.approvals.requestedAt))
+    .limit(1);
+  return rows[0];
+}
+
+export async function getDecidedApproval(db: RunDb, runId: string): Promise<ApprovalRow | undefined> {
+  const rows = await db
+    .select()
+    .from(schema.approvals)
+    .where(and(eq(schema.approvals.runId, runId), inArray(schema.approvals.status, ['approved', 'rejected'])))
+    .orderBy(desc(schema.approvals.decidedAt))
     .limit(1);
   return rows[0];
 }
@@ -152,15 +168,15 @@ export async function decideApprovalRow(
   reason: string,
 ): Promise<ApprovalRow | undefined> {
   const rows = await db
-    .update(approvals)
+    .update(schema.approvals)
     .set({ status: decision, decidedBy, decisionReason: reason, decidedAt: new Date() })
-    .where(and(eq(approvals.approvalId, approvalId), eq(approvals.status, 'pending')))
+    .where(and(eq(schema.approvals.approvalId, approvalId), eq(schema.approvals.status, 'pending')))
     .returning();
   return rows[0];
 }
 
-export async function insertApproval(db: RunDb, row: typeof approvals.$inferInsert): Promise<ApprovalRow> {
-  const rows = await db.insert(approvals).values(row).returning();
+export async function insertApproval(db: RunDb, row: typeof schema.approvals.$inferInsert): Promise<ApprovalRow> {
+  const rows = await db.insert(schema.approvals).values(row).returning();
   const row0 = rows[0];
   if (!row0) throw new Error(`approval row insert returned no row (run ${row.runId})`);
   return row0;

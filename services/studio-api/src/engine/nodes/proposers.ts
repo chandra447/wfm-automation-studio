@@ -44,7 +44,7 @@ export interface ProposerInput {
 }
 
 export interface ProposerResult {
-  output: ProposalOutput;
+  output: ProposalOutputShape;
   rationale: string;
   evidence: Array<{ label: string; value: string }>;
   proposer: 'llm' | 'rules';
@@ -98,7 +98,7 @@ export class RulesProposer implements Proposer {
   }
 
   async proposeCandidateChoice(
-    node: AiDecisionNode,
+    _node: AiDecisionNode,
     event: AnyWfmEvent,
     data: Record<string, unknown>,
   ): Promise<ProposerResult> {
@@ -149,8 +149,8 @@ export class RulesProposer implements Proposer {
   }
 
   async proposeTimesheetAdjustment(
-    node: AiDecisionNode,
-    event: AnyWfmEvent,
+    _node: AiDecisionNode,
+    _event: AnyWfmEvent,
     data: Record<string, unknown>,
   ): Promise<ProposerResult> {
     const detail = z.object({ timesheet: timesheetSchema, awardRule: awardRuleSchema }).safeParse(data['timesheet.get']);
@@ -206,7 +206,7 @@ export class RulesProposer implements Proposer {
   }
 
   async proposeCoveragePlan(
-    node: AiDecisionNode,
+    _node: AiDecisionNode,
     event: AnyWfmEvent,
     data: Record<string, unknown>,
   ): Promise<ProposerResult> {
@@ -249,7 +249,7 @@ export class LlmProposer implements Proposer {
   readonly #model: ChatOpenAI;
   readonly #modelName: string;
 
-  constructor(env: { OPENAI_API_KEY: string; OPENAI_MODEL?: string; LLM_TIMEOUT_MS?: string }) {
+  constructor(env: { OPENAI_API_KEY: string; OPENAI_MODEL?: string | undefined; LLM_TIMEOUT_MS?: string | undefined }) {
     this.#modelName = env.OPENAI_MODEL ?? 'gpt-5.1';
     this.#model = new ChatOpenAI({
       apiKey: env.OPENAI_API_KEY,
@@ -279,7 +279,7 @@ export class LlmProposer implements Proposer {
             `llm proposal failed schema validation: ${validated.error.issues.map((issue) => issue.path.join('.')).join(', ')}`,
           );
         }
-        const result = this.#withoutIneligible(validated.data as ProposalOutput, input);
+        const result = this.#withoutIneligible(validated.data as ProposalOutputShape, input);
         return {
           output: result,
           rationale: result.rationale,
@@ -297,7 +297,7 @@ export class LlmProposer implements Proposer {
       : new ProposerError(`llm proposer failed after retry: ${String(lastError)}`);
   }
 
-  #withoutIneligible(result: ProposalOutput, input: ProposerInput): ProposalOutput {
+  #withoutIneligible(result: ProposalOutputShape, input: ProposerInput): ProposalOutputShape {
     if (!('employeeIds' in result)) return result;
     const candidates = candidateListSchema.safeParse(input.data['shift.candidates']);
     if (!candidates.success) return result;
@@ -316,6 +316,10 @@ export class LlmProposer implements Proposer {
   }
 }
 
-export function createProposer(env: { OPENAI_API_KEY?: string; OPENAI_MODEL?: string; LLM_TIMEOUT_MS?: string }): Proposer {
+export function createProposer(env: {
+  OPENAI_API_KEY: string;
+  OPENAI_MODEL?: string | undefined;
+  LLM_TIMEOUT_MS?: string | undefined;
+}): Proposer {
   return env.OPENAI_API_KEY ? new LlmProposer(env) : new RulesProposer();
 }

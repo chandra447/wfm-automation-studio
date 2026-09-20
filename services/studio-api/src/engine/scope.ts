@@ -18,9 +18,9 @@ export interface RunScope {
  * and the engine can bind an inline executor instead.
  */
 export interface QueueGateway {
-  enqueueRunStart: (runId: string) => Promise<void>;
-  enqueueRunStep: (runId: string) => Promise<void>;
-  scheduleApprovalTimeout: (job: { runId: string; approvalId: string; runAt: Date }) => Promise<void>;
+  enqueueRunStart: (tenantId: string, runId: string) => Promise<void>;
+  enqueueRunStep: (tenantId: string, runId: string) => Promise<void>;
+  scheduleApprovalTimeout: (job: { tenantId: string; runId: string; approvalId: string; runAt: Date }) => Promise<void>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
 }

@@ -1,4 +1,4 @@
-import type { TriggerNode } from '@wfm/workflows';
+import type { WorkflowNode } from '@wfm/workflows';
 import { appendRunEvent, getFirstRunEvent } from '../run-store.ts';
 import type { RunScope, RunStateFields } from '../state.ts';
 import type { ExecutorDeps } from './context.ts';
@@ -11,9 +11,10 @@ import type { ExecutorDeps } from './context.ts';
 export async function runTriggerNode(
   scope: RunScope,
   deps: ExecutorDeps,
-  node: TriggerNode,
+  node: WorkflowNode,
   state: RunStateFields,
 ): Promise<Pick<RunStateFields, 'nodes' | 'cursor' | 'decision'>> {
+  if (node.type !== 'trigger') throw new Error(`${node.type} executor reached with a ${node.type} node`);
   const existing = await getFirstRunEvent(deps.db, scope.runId, 'event_received');
   if (!existing) {
     await appendRunEvent(deps.db, {

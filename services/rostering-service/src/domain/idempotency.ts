@@ -61,10 +61,7 @@ export async function withIdempotency(
     }
 
     const outcome = await run(tx);
-    // postgres.js types transaction handles and connections as sibling
-    // interfaces; the outbox port (frozen) takes the connection type while the
-    // runtime object is the same transaction.
-    await enqueueEvents(tx as unknown as Sql, outcome.events);
+    await enqueueEvents(tx, outcome.events);
     await tx`
       INSERT INTO idempotency_keys (tenant_id, key, request_hash, response)
       VALUES (${tenantId}, ${key}, ${requestHash}, ${tx.json(outcome.body as never)})
@@ -76,7 +73,7 @@ export async function withIdempotency(
 export async function withoutIdempotency(sql: Sql, run: (tx: Tx) => Promise<CommandOutcome>): Promise<CommandResult> {
   return sql.begin(async (tx) => {
     const outcome = await run(tx);
-    await enqueueEvents(tx as unknown as Sql, outcome.events);
+    await enqueueEvents(tx, outcome.events);
     return { status: outcome.status, body: outcome.body, events: outcome.events, replayed: false };
   });
 }

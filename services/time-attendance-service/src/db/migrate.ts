@@ -122,3 +122,9 @@ export async function migrate(url: string): Promise<void> {
     await sql.end({ timeout: 5 });
   }
 }
+
+if (import.meta.main) {
+  const url = process.env.TIME_ATTENDANCE_DATABASE_URL ?? 'postgres://wfm:wfm@127.0.0.1:5433/time_attendance';
+  await migrate(url);
+  process.stdout.write('time_attendance migrations up to date\n');
+}

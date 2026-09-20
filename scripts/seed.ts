@@ -194,14 +194,22 @@ async function seedStudio(): Promise<void> {
       INSERT INTO workflows (workflow_id, tenant_id, name, description, enabled, draft_version_number, published_version_number)
       VALUES (${workflowId}, ${tenantId}, ${template.definition.name}, ${template.definition.description}, true, 1, 1)
     `;
-    await studio`
-      INSERT INTO workflow_versions (
-        version_id, workflow_id, tenant_id, version_number, status, definition, layout, diagnostics, created_by
-      ) VALUES (
-        ${versionId}, ${workflowId}, ${tenantId}, 1, 'published',
-        ${studio.json(template.definition)}, ${studio.json(template.layout)}, ${studio.json([])}, 'seed'
-      )
-    `;
+    // jsonb parameters are passed as text and cast twice: a bare $n::jsonb with
+    // a JSON string would store a jsonb string scalar, and the tagged template
+    // rejects object parameters outright.
+    await studio.unsafe(
+      `INSERT INTO workflow_versions (
+         version_id, workflow_id, tenant_id, version_number, status, definition, layout, diagnostics, created_by
+       ) VALUES ($1, $2, $3, 1, 'published', $4::text::jsonb, $5::text::jsonb, $6::text::jsonb, 'seed')`,
+      [
+        versionId,
+        workflowId,
+        tenantId,
+        JSON.stringify(template.definition),
+        JSON.stringify(template.layout),
+        JSON.stringify([]),
+      ],
+    );
   }
 }
 

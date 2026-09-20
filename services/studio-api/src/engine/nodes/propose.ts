@@ -1,9 +1,8 @@
-import type { AiDecisionNode } from '@wfm/workflows';
-import type { AnyWfmEvent } from '@wfm/contracts';
+import type { WorkflowNode } from '@wfm/workflows';
+import { timesheetDetailResponseSchema, type AnyWfmEvent } from '@wfm/contracts';
 import { appendAudit, appendRunEvent } from '../run-store.ts';
 import type { RunScope, RunStateFields } from '../state.ts';
 import type { ExecutorDeps } from './context.ts';
-import { EnginePermanentError } from '../errors.ts';
 
 /**
  * Reads the shift id for shift-scoped events (aggregate or payload). Nothing
@@ -12,6 +11,11 @@ import { EnginePermanentError } from '../errors.ts';
 function shiftIdOf(event: AnyWfmEvent): string {
   if ('shiftId' in event.payload && typeof event.payload.shiftId === 'string') return event.payload.shiftId;
   return event.aggregate.id;
+}
+
+function awardRuleCodeOf(timesheetData: unknown): string | null {
+  const parsed = timesheetDetailResponseSchema.safeParse(timesheetData);
+  return parsed.success ? parsed.data.awardRule.ruleCode : null;
 }
 
 function timesheetIdOf(event: AnyWfmEvent): string {
@@ -30,9 +34,10 @@ function timesheetIdOf(event: AnyWfmEvent): string {
 export async function runProposeNode(
   scope: RunScope,
   deps: ExecutorDeps,
-  node: AiDecisionNode,
+  node: WorkflowNode,
   state: RunStateFields,
 ): Promise<Pick<RunStateFields, 'nodes' | 'cursor' | 'decision'>> {
+  if (node.type !== 'ai_decision') throw new Error(`${node.type} executor reached with a ${node.type} node`);
   const data: Record<string, unknown> = {};
   for (const tool of node.config.tools) {
     try {
@@ -62,15 +67,14 @@ export async function runProposeNode(
           break;
         }
         case 'award_rule.get': {
-          const timesheet = data['timesheet.get'];
           const ruleCode =
             'awardRuleCode' in state.event.payload && typeof state.event.payload.awardRuleCode === 'string'
               ? state.event.payload.awardRuleCode
-              : undefined;
-          if (typeof ruleCode === 'string') {
+              : awardRuleCodeOf(data['timesheet.get']);
+          if (ruleCode) {
             data[tool] = await deps.clients.attendance.getAwardRule(scope.tenantId, ruleCode);
           } else {
-            data[tool] = { error: `no award rule code on ${state.event.eventType}` };
+            data[tool] = { error: `no award rule code available on ${state.event.eventType}` };
           }
           break;
         }

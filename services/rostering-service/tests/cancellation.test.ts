@@ -35,7 +35,7 @@ afterAll(async () => {
 });
 
 describe('POST /shifts/:shiftId/cancellation', () => {
-  test('cancels the shift and emits shift.cancelled with hoursUntilStart from now', async () => {
+  test('an employee cancelling vacates the shift and emits shift.cancelled', async () => {
     const response = await call(harness.app, `/shifts/${shiftId}/cancellation`, {
       method: 'POST',
       headers: managerHeaders,
@@ -43,7 +43,8 @@ describe('POST /shifts/:shiftId/cancellation', () => {
     });
     expect(response.status).toBe(200);
     const body = await jsonOf<{ status: string; assignedEmployeeId: string | null }>(response);
-    expect(body.status).toBe('cancelled');
+    // Vacated, not called off: the coverage workflow has to be able to fill it.
+    expect(body.status).toBe('published');
     expect(body.assignedEmployeeId).toBeNull();
 
     const events = await outboxEvents(harness.sql, 'shift.cancelled');
@@ -58,14 +59,23 @@ describe('POST /shifts/:shiftId/cancellation', () => {
     expect(payload?.['reason']).toBe('Sick leave');
   });
 
-  test('refuses to cancel an already cancelled shift', async () => {
-    const response = await call(harness.app, `/shifts/${shiftId}/cancellation`, {
+  test('cancelling the shift itself is terminal and cannot be repeated', async () => {
+    const cancelled = await call(harness.app, `/shifts/${shiftId}/cancellation`, {
+      method: 'POST',
+      headers: managerHeaders,
+      body: { reason: 'Wing closed for maintenance' },
+    });
+    expect(cancelled.status).toBe(200);
+    const cancelledBody = await jsonOf<{ status: string }>(cancelled);
+    expect(cancelledBody.status).toBe('cancelled');
+
+    const again = await call(harness.app, `/shifts/${shiftId}/cancellation`, {
       method: 'POST',
       headers: managerHeaders,
       body: { reason: 'Duplicate' },
     });
-    expect(response.status).toBe(409);
-    const body = await jsonOf<{ error: { code: string } }>(response);
+    expect(again.status).toBe(409);
+    const body = await jsonOf<{ error: { code: string } }>(again);
     expect(body.error.code).toBe('PRECONDITION_FAILED');
   });
 });

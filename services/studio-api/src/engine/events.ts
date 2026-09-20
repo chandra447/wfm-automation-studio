@@ -1,8 +1,8 @@
+import type { EventBus } from '@wfm/eventbus';
 import {
   makeEvent,
   type Actor,
   type AnyWfmEvent,
-  type EventBus,
   type ApprovalRequested,
   type ApprovalDecided,
   type ActionExecuted,

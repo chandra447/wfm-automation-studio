@@ -2,7 +2,7 @@ import {
   adjustmentRequestSchema,
   adjustmentResponseSchema,
   apiErrorSchema,
-  assignmentRequestSchema,
+  assignShiftRequestSchema,
   awardRuleSchema,
   cancellationRequestSchema,
   candidateListSchema,
@@ -162,8 +162,12 @@ export function createDomainClients(env: DomainClientEnvironment): DomainClients
         await request('POST', `${rosteringBase}/shifts/${shiftId}/assignment`, tenantId, body, idempotencyKey),
       );
     },
-    cancelShift: async (tenantId, shiftId, body) =>
-      shiftSchema.parse(await request('POST', `${rosteringBase}/shifts/${shiftId}/cancellation`, tenantId, body)),
+    cancelShift: async (tenantId, shiftId, body) => {
+      cancellationRequestSchema.parse(body);
+      return shiftSchema.parse(
+        await request('POST', `${rosteringBase}/shifts/${shiftId}/cancellation`, tenantId, body),
+      );
+    },
   };
 
   const attendance: AttendanceClient = {

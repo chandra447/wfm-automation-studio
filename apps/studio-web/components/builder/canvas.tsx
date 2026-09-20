@@ -1,10 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
+import '@xyflow/react/dist/style.css';
 import {
   Background,
   BackgroundVariant,
-  Controls,
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
@@ -71,6 +71,30 @@ function SelectionSync({ onSelect }: { onSelect: (nodeId: string | null) => void
   return null;
 }
 
+function CanvasControls() {
+  const { zoomIn, zoomOut, fitView } = useReactFlow();
+  const buttonClass =
+    'flex h-8 w-8 items-center justify-center border-b border-[var(--color-border-subtle)] text-sm text-[var(--color-ink)] hover:bg-[var(--color-surface)]';
+  return (
+    <>
+      <button type="button" className={buttonClass} aria-label="Zoom out" onClick={() => zoomOut()}>
+        −
+      </button>
+      <button type="button" className={buttonClass} aria-label="Zoom in" onClick={() => zoomIn()}>
+        +
+      </button>
+      <button
+        type="button"
+        className={`${buttonClass} border-b-0`}
+        aria-label="Fit view"
+        onClick={() => fitView({ duration: 200 })}
+      >
+        ⤢
+      </button>
+    </>
+  );
+}
+
 function Banner({ tone, children }: { tone: 'warning' | 'danger'; children: ReactNode }) {
   return (
     <div
@@ -89,6 +113,8 @@ function FlowCanvas({
   flowNodes,
   flowEdges,
   nodeTypeById,
+  viewportSeed,
+  initialViewport,
   selectedId,
   onSelectNode,
   onAddNodeType,
@@ -101,6 +127,8 @@ function FlowCanvas({
   flowNodes: BuilderFlowNode[];
   flowEdges: Edge[];
   nodeTypeById: Record<string, WorkflowNodeType>;
+  viewportSeed: string;
+  initialViewport: CanvasLayout['viewport'];
   selectedId: string | null;
   onSelectNode: (nodeId: string | null) => void;
   onAddNodeType: (nodeType: WorkflowNodeType, position: XYPosition) => void;
@@ -151,9 +179,11 @@ function FlowCanvas({
       onDrop={handleDrop}
     >
       <ReactFlow
+        key={viewportSeed}
         nodes={flowNodes}
         edges={flowEdges}
         nodeTypes={NODE_TYPES}
+        defaultViewport={initialViewport}
         deleteKeyCode={['Backspace', 'Delete']}
         isValidConnection={connectionAllowed}
         onConnect={(connection: Connection) => {
@@ -181,13 +211,15 @@ function FlowCanvas({
         proOptions={{ hideAttribution: true }}
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} color="var(--color-canvas-grid)" />
-        <Controls showInteractive={false} position="bottom-right" />
+        <div className="absolute bottom-4 right-4 flex flex-col gap-0.5 overflow-hidden rounded-md border border-[var(--color-border-subtle)] bg-[var(--color-surface-raised)] shadow-lg">
+          <CanvasControls />
+        </div>
         <MiniMap
           pannable
           zoomable
-          position="top-right"
-          maskColor="var(--color-canvas)"
-          bgColor="var(--color-surface)"
+          position="bottom-left"
+          style={{ width: 160, height: 110 }}
+          className="[&>svg]:bg-[var(--color-surface-raised)] [&_.react-flow__minimap-mask]:fill-[var(--color-canvas)]"
           nodeColor={(node) => {
             const type = (node.data as { node?: { type?: string } }).node?.type;
             const parsed = workflowNodeTypeSchema.safeParse(type);
@@ -198,7 +230,7 @@ function FlowCanvas({
         <SelectionSync onSelect={onSelectNode} />
       </ReactFlow>
       {selectedId === null && (
-        <p className="pointer-events-none absolute bottom-4 left-4 rounded-md bg-[var(--color-surface)] px-2 py-1 text-[10px] text-[var(--color-ink-faint)]">
+        <p className="pointer-events-none absolute bottom-4 left-44 rounded-md bg-[var(--color-surface)] px-2 py-1 text-[10px] text-[var(--color-ink-faint)]">
           Select a node to edit · ⌘Z undo · ⌘⇧Z redo · ⌘S save · Delete removes the selection
         </p>
       )}
@@ -465,7 +497,7 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
           : 'clean';
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-[calc(100vh-3.5625rem)] min-h-0 flex-col overflow-hidden">
       <Toolbar
         definition={snapshot.definition}
         saveState={saveState}
@@ -527,6 +559,8 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
             flowNodes={flowNodes}
             flowEdges={flowEdges}
             nodeTypeById={nodeTypeById}
+            viewportSeed={offline ? `offline:${workflowId}` : loaded ? `loaded:${workflowId}` : 'pending'}
+            initialViewport={snapshot.layout.viewport}
             selectedId={selectedId}
             onSelectNode={setSelectedId}
             onAddNodeType={(nodeType, position) => {

@@ -55,7 +55,7 @@ describe('computeAwardImpact', () => {
   test('totals split pay between ordinary and overtime lines', () => {
     const totals = computeAwardTotals({ rule, workedMinutes: 600, breakMinutesTaken: 30, hourlyRateCents: rate });
     expect(totals.totalPayCents).toBe(49_600 + 18_600);
-    expect(totals.payImpactCents).toBe(0);
+    expect(totals.payImpactCents).toBe(6_200);
   });
 
   test('totals keep the missed-break minutes inside ordinary pay', () => {

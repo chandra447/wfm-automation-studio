@@ -1,5 +1,5 @@
 import { evaluateConditions, type Condition } from '@wfm/contracts';
-import type { ConditionNode } from '@wfm/workflows';
+import type { WorkflowNode } from '@wfm/workflows';
 import type { RunScope, RunStateFields } from '../state.ts';
 import type { ExecutorDeps } from './context.ts';
 
@@ -12,9 +12,10 @@ import type { ExecutorDeps } from './context.ts';
 export async function runConditionNode(
   _scope: RunScope,
   deps: ExecutorDeps,
-  node: ConditionNode,
+  node: WorkflowNode,
   state: RunStateFields,
 ): Promise<Pick<RunStateFields, 'nodes' | 'cursor' | 'decision'>> {
+  if (node.type !== 'condition') throw new Error(`${node.type} executor reached with a ${node.type} node`);
   const view = { ...state.event, nodes: state.nodes };
   const evaluation = evaluateConditions(node.config.conditions as Condition[], view);
   for (const result of evaluation.results) {

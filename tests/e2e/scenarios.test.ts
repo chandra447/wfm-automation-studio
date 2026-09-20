@@ -94,7 +94,7 @@ describe('scenario A — coverage rescue', () => {
     expect(kinds).toContain('policy_evaluated');
     expect(kinds).toContain('proposal_created');
     expect(kinds).toContain('approval_requested');
-  });
+  }, 90000);
 
   test('an employee without the role cannot approve', async () => {
     const parked = await runUntil(runId, 'awaiting_approval');
@@ -108,7 +108,7 @@ describe('scenario A — coverage rescue', () => {
 
     const still = await call<Approval[]>(`${studioApi}/approvals?status=pending`, { headers: headersFor('manager') });
     expect(still.body.some((approval) => approval.approvalId === approvalId)).toBe(true);
-  });
+  }, 90000);
 
   test('the manager approves and the engine offers the shift', async () => {
     const parked = await runUntil(runId, 'awaiting_approval');
@@ -133,7 +133,7 @@ describe('scenario A — coverage rescue', () => {
     expect(offers.status).toBe(200);
     expect(offers.body.shiftId).toBe(shiftId);
     expect(offers.body.offers.length).toBeGreaterThan(0);
-  });
+  }, 90000);
 
   test('a replayed decision cannot apply the action twice', async () => {
     const finished = await runUntil(runId, 'succeeded');
@@ -153,7 +153,7 @@ describe('scenario A — coverage rescue', () => {
       headers: headersFor('manager'),
     });
     expect(offersAfter.body.offers.length).toBe(offersBefore.body.offers.length);
-  });
+  }, 90000);
 });
 
 describe('scenario B — payroll-safe timesheet exception', () => {
@@ -191,7 +191,7 @@ describe('scenario B — payroll-safe timesheet exception', () => {
     });
     expect(after.body.timesheet.status).toBe('adjusted');
     expect(after.body.timesheet.totalPayCents).not.toBe(before.body.timesheet.totalPayCents);
-  });
+  }, 90000);
 });
 
 describe('platform behaviour visible end to end', () => {

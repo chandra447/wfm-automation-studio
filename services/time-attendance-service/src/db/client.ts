@@ -22,5 +22,13 @@ export interface ScopedTx {
 
 export function createDatabase(url: string): Database {
   const sql = postgres(url, { max: 10, onnotice: () => {} });
-  return { sql, db: drizzle(sql, { schema }) };
+  const db = drizzle(sql, { schema });
+  /**
+   * drizzle replaces the json/jsonb serializers with pass-throughs because it
+   * stringifies json itself; the outbox's raw template inserts pass plain
+   * objects, so the default JSON serializers go back.
+   */
+  sql.options.serializers[114] = (value: unknown) => JSON.stringify(value);
+  sql.options.serializers[3802] = (value: unknown) => JSON.stringify(value);
+  return { sql, db };
 }

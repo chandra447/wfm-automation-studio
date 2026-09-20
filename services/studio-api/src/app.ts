@@ -88,6 +88,10 @@ export const app = new Elysia()
       });
     }
     const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith('forbidden:')) {
+      set.status = 403;
+      return apiError(errorCodes.forbidden, message.slice('forbidden:'.length).trim());
+    }
     set.status = message.includes('not found') ? 404 : 500;
     return apiError(message.includes('not found') ? errorCodes.notFound : errorCodes.validation, message);
   })

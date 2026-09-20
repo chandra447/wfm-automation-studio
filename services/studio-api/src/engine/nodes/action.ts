@@ -1,16 +1,20 @@
 import {
   adjustmentRequestSchema,
   assignShiftRequestSchema,
-  clockOutRequestSchema,
   createOffersRequestSchema,
   timesheetApprovalRequestSchema,
 } from '@wfm/contracts';
-import { commandById, type ActionNode, type CommandDescriptor } from '@wfm/workflows';
-import { appendAudit, appendRunEvent } from '../run-store.ts';
+import { z } from 'zod';
+import {
+  commandById,
+  resolveTemplateMap,
+  type WorkflowNode,
+  type CommandDescriptor,
+} from '@wfm/workflows';
+import { appendAudit, appendRunEvent, countAction, getDecidedApproval } from "../run-store.ts";
 import { publishActionExecuted } from '../events.ts';
 import type { RunScope, RunStateFields } from '../state.ts';
 import type { ExecutorDeps } from './context.ts';
-import { resolveTemplateMap } from '@wfm/workflows';
 
 export interface ActionOutcome {
   executed: boolean;
@@ -18,6 +22,7 @@ export interface ActionOutcome {
   idempotencyKey: string;
   resultSummary: string;
   payImpactCents: number;
+  decidedBy: string | null;
 }
 
 /**
@@ -29,21 +34,25 @@ export interface ActionOutcome {
 export async function runActionNode(
   scope: RunScope,
   deps: ExecutorDeps,
-  node: ActionNode,
+  node: WorkflowNode,
   state: RunStateFields,
 ): Promise<Pick<RunStateFields, 'nodes' | 'cursor' | 'decision'>> {
+  if (node.type !== 'action') throw new Error(`${node.type} executor reached with a ${node.type} node`);
   const command = commandById(node.config.command);
   if (!command) throw new Error(`unknown command "${node.config.command}" in action node ${node.id}`);
 
   const resolved = resolveTemplateMap(node.config.input, {
     input: state.event,
-    nodes: Object.fromEntries(Object.entries(state.nodes).map(([id, value]) => [id, { output: value?.output }])),
+    nodes: Object.fromEntries(
+      Object.entries(state.nodes).map(([id, value]) => [id, { output: value?.output }]),
+    ),
     now: new Date(),
   });
 
-  const outcome = scope.dryRun
-    ? dryRunOutcome(command, node.id, resolved)
-    : await executeCommand(command, resolved, scope);
+  const outcome = scope.dryRun ? dryRunOutcome(command, node.id) : await executeCommand(command, resolved, scope, deps, node.id);
+  if (outcome.executed) {
+    await countAction(deps.db, scope.runId);
+  }
 
   await appendRunEvent(deps.db, {
     runId: scope.runId,
@@ -51,7 +60,7 @@ export async function runActionNode(
     nodeId: node.id,
     title: `${node.label}${outcome.executed ? '' : ' (dry-run)'}`,
     detail: `${outcome.command} — ${outcome.resultSummary}`,
-    data: outcome,
+    data: { ...outcome },
   });
   await appendAudit(deps.db, {
     tenantId: scope.tenantId,
@@ -59,8 +68,13 @@ export async function runActionNode(
     workflowId: scope.workflowId,
     nodeId: node.id,
     action: 'action.execute',
-    actor: scope.dryRun ? 'studio-engine' : (outcome.decidedBy ?? 'studio-engine'),
-    detail: { command: outcome.command, idempotencyKey: outcome.idempotencyKey, result: outcome.resultSummary, dryRun: scope.dryRun },
+    actor: outcome.decidedBy ?? 'studio-engine',
+    detail: {
+      command: outcome.command,
+      idempotencyKey: outcome.idempotencyKey,
+      result: outcome.resultSummary,
+      dryRun: scope.dryRun,
+    },
   });
   if (outcome.executed) {
     await publishActionExecuted(deps.bus, {
@@ -84,17 +98,116 @@ export async function runActionNode(
   };
 }
 
-function dryRunOutcome(
-  command: CommandDescriptor,
-  nodeId: string,
-  resolved: Record<string, unknown>,
-): ActionOutcome & { decidedBy?: string } {
-  const path = renderPath(command.pathTemplate, resolved);
+function idempotencyKeyOf(runId: string, nodeId: string): string {
+  return `run:${runId}:node:${nodeId}`;
+}
+
+function dryRunOutcome(command: CommandDescriptor, nodeId: string): ActionOutcome {
   return {
     executed: false,
-    command: `${command.method} ${path}`,
-    idempotencyKey: idempotencyKeyOf(nodeIdPlaceholder, resolved),
-    resultSummary: `dry-run: ${command.label} against ${command.service} with ${Object.keys(resolved).length} resolved inputs`,
+    command: `${command.method} ${command.pathTemplate}`,
+    idempotencyKey: idempotencyKeyOf('dry-run', nodeId),
+    resultSummary: `dry-run: ${command.label} against ${command.service} — no command issued`,
     payImpactCents: 0,
+    decidedBy: 'studio-engine',
   };
+}
+
+/**
+ * Who authorised the action: the pending/decided approval's decider. With no
+ * approval (a non-pay action after an explicit path), the engine itself acted.
+ */
+async function decidedByOf(deps: ExecutorDeps, runId: string): Promise<string> {
+  const approval = await getDecidedApproval(deps.db, runId);
+  return approval?.decidedBy ?? 'studio-engine';
+}
+
+async function executeCommand(
+  command: CommandDescriptor,
+  resolved: Record<string, unknown>,
+  scope: RunScope,
+  deps: ExecutorDeps,
+  nodeId: string,
+): Promise<ActionOutcome> {
+  const idempotencyKey = idempotencyKeyOf(scope.runId, nodeId);
+  const decidedBy = await decidedByOf(deps, scope.runId);
+
+  switch (command.id) {
+    case 'rostering.send_offers': {
+      const body = createOffersRequestSchema.parse({
+        employeeIds: resolved['employeeIds'],
+        expiresAt: resolved['expiresAt'],
+        reason: resolved['reason'],
+      });
+      const shiftId = requireUuid(resolved['shiftId'], 'shiftId');
+      const offers = await deps.clients.rostering.createOffers(scope.tenantId, shiftId, body, idempotencyKey);
+      return {
+        executed: true,
+        command: `POST /shifts/${shiftId}/offers`,
+        idempotencyKey,
+        resultSummary: `Offers sent to ${offers.offers.length} employee(s)`,
+        payImpactCents: 0,
+        decidedBy,
+      };
+    }
+    case 'rostering.assign_employee': {
+      const body = assignShiftRequestSchema.parse({
+        employeeId: resolved['employeeId'],
+        reason: resolved['reason'],
+      });
+      const shiftId = requireUuid(resolved['shiftId'], 'shiftId');
+      const shift = await deps.clients.rostering.assignEmployee(scope.tenantId, shiftId, body, idempotencyKey);
+      return {
+        executed: true,
+        command: `POST /shifts/${shiftId}/assignment`,
+        idempotencyKey,
+        resultSummary: `Shift ${shiftId} assigned to employee ${shift.assignedEmployeeId ?? body.employeeId}`,
+        payImpactCents: 0,
+        decidedBy,
+      };
+    }
+    case 'time_attendance.apply_adjustment': {
+      const body = adjustmentRequestSchema.parse({
+        reason: resolved['reason'],
+        unpaidBreakMinutesDelta: resolved['unpaidBreakMinutesDelta'],
+        overtimeMinutesDelta: resolved['overtimeMinutesDelta'],
+      });
+      const timesheetId = requireUuid(resolved['timesheetId'], 'timesheetId');
+      const adjustment = await deps.clients.attendance.applyAdjustment(scope.tenantId, timesheetId, body, idempotencyKey);
+      return {
+        executed: true,
+        command: `POST /timesheets/${timesheetId}/adjustments`,
+        idempotencyKey,
+        resultSummary: `Adjustment ${adjustment.adjustmentId} applied by ${adjustment.appliedBy} (pay impact ${adjustment.payImpactCents} cents)`,
+        payImpactCents: adjustment.payImpactCents,
+        decidedBy,
+      };
+    }
+    case 'time_attendance.approve_timesheet': {
+      const body = timesheetApprovalRequestSchema.parse({
+        decision: resolved['decision'],
+        reason: resolved['reason'],
+      });
+      const timesheetId = requireUuid(resolved['timesheetId'], 'timesheetId');
+      const result = await deps.clients.attendance.decideTimesheet(scope.tenantId, timesheetId, body);
+      return {
+        executed: true,
+        command: `POST /timesheets/${timesheetId}/approval`,
+        idempotencyKey,
+        resultSummary: `Timesheet ${timesheetId} is now ${result.timesheet.status}`,
+        payImpactCents: 0,
+        decidedBy,
+      };
+    }
+    default:
+      throw new Error(`command "${command.id}" has no executor binding in the engine`);
+  }
+}
+
+function requireUuid(value: unknown, field: string): string {
+  const parsed = z.uuid().safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`action input "${field}" did not resolve to a UUID (${parsed.error.issues[0]?.message ?? 'invalid'})`);
+  }
+  return parsed.data;
 }

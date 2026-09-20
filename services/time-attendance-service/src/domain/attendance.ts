@@ -1,5 +1,4 @@
 import { and, desc, eq, sql as dsql } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/postgres-js';
 import { z } from 'zod';
 import type {
   ActorContext,
@@ -22,7 +21,7 @@ import {
   timesheetSchema,
 } from '@wfm/contracts';
 import { enqueueEvents } from '@wfm/outbox';
-import type { Database, Tx } from '../db/client.ts';
+import type { Database, Tx, ScopedTx } from '../db/client.ts';
 import {
   adjustments as adjustmentsTable,
   awardRules,
@@ -52,6 +51,18 @@ type AwardRuleRow = typeof awardRules.$inferSelect;
 type BreakRow = typeof breaksTable.$inferSelect;
 type PayLineRow = typeof payLinesTable.$inferSelect;
 type ExceptionRow = typeof exceptionsTable.$inferSelect;
+
+/**
+ * drizzle holds the transaction's postgres client private, but the outbox must
+ * enqueue into that same client; the runtime shape is stable in the pinned
+ * drizzle version, so the guarded read is pinned here once.
+ */
+function rawClientOf(session: unknown): Tx {
+  if (typeof session !== 'object' || session === null || !('client' in session)) {
+    throw new Error('drizzle transaction session has no underlying postgres client');
+  }
+  return session.client as Tx;
+}
 
 export interface ClockResponse {
   timesheet: Timesheet;
@@ -203,18 +214,17 @@ const approvalResponseSchema = z.object({ timesheet: timesheetSchema });
 export function createAttendanceService({ database }: ServiceDeps): AttendanceService {
   /**
    * Runs work inside one Postgres transaction. drizzle keeps the transaction's
-   * underlying postgres client private, so the one library-boundary cast lives
+   * underlying postgres client private, so the one library-boundary read lives
    * here; the outbox writes into that same client.
    */
   async function withTransaction<T>(work: (tx: ScopedTx) => Promise<T>): Promise<T> {
     return database.db.transaction(async (dtx) => {
-      const raw = (dtx.session as unknown as { client: Tx }).client;
-      return work({ db: dtx, raw });
+      return work({ db: dtx, raw: rawClientOf(dtx._.session) });
     });
   }
 
-  async function loadEmployee(tx: Tx, context: ActorContext, employeeId: string): Promise<EmployeeRow> {
-    const rows = await drizzle(tx)
+  async function loadEmployee(tx: ScopedTx, context: ActorContext, employeeId: string): Promise<EmployeeRow> {
+    const rows = await tx.db
       .select()
       .from(employeesTable)
       .where(and(eq(employeesTable.tenantId, context.tenantId), eq(employeesTable.id, employeeId)))
@@ -226,12 +236,12 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
 
   /** The employee's award rule effective at `at`; the latest effective row wins. */
   async function resolveAwardRule(
-    tx: Tx,
+    tx: ScopedTx,
     context: ActorContext,
     employee: EmployeeRow,
     at: Date,
   ): Promise<AwardRuleRow> {
-    const rules = await drizzle(tx)
+    const rules = await tx.db
       .select()
       .from(awardRules)
       .where(eq(awardRules.tenantId, context.tenantId))
@@ -250,11 +260,11 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
   }
 
   async function loadAwardRuleByCode(
-    tx: Tx,
+    tx: ScopedTx,
     context: ActorContext,
     ruleCode: string,
   ): Promise<AwardRuleRow> {
-    const rows = await drizzle(tx)
+    const rows = await tx.db
       .select()
       .from(awardRules)
       .where(and(eq(awardRules.tenantId, context.tenantId), eq(awardRules.ruleCode, ruleCode)))
@@ -264,8 +274,8 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
     return row;
   }
 
-  async function loadTimesheet(tx: Tx, context: ActorContext, timesheetId: string): Promise<TimesheetRow> {
-    const rows = await drizzle(tx)
+  async function loadTimesheet(tx: ScopedTx, context: ActorContext, timesheetId: string): Promise<TimesheetRow> {
+    const rows = await tx.db
       .select()
       .from(timesheetsTable)
       .where(and(eq(timesheetsTable.tenantId, context.tenantId), eq(timesheetsTable.id, timesheetId)))
@@ -280,12 +290,12 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
    * first, otherwise the employee's latest open shift-less timesheet.
    */
   async function findOpenTimesheet(
-    tx: Tx,
+    tx: ScopedTx,
     context: ActorContext,
     employeeId: string,
     shiftId: string | null,
   ): Promise<TimesheetRow | null> {
-    const rows = await drizzle(tx)
+    const rows = await tx.db
       .select()
       .from(timesheetsTable)
       .where(
@@ -307,18 +317,18 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
   }
 
   async function buildTimesheet(
-    tx: Tx,
+    tx: ScopedTx,
     row: TimesheetRow,
     awardRule: AwardRuleRow,
   ): Promise<{ timesheet: Timesheet; awardRule: AwardRule }> {
     const [breakRows, payLineRows, exceptionRows] = await Promise.all([
-      drizzle(tx).select().from(breaksTable).where(eq(breaksTable.timesheetId, row.id)).orderBy(breaksTable.startedAt),
-      drizzle(tx)
+      tx.db.select().from(breaksTable).where(eq(breaksTable.timesheetId, row.id)).orderBy(breaksTable.startedAt),
+      tx.db
         .select()
         .from(payLinesTable)
         .where(eq(payLinesTable.timesheetId, row.id))
         .orderBy(payLinesTable.payTypeCode),
-      drizzle(tx)
+      tx.db
         .select()
         .from(exceptionsTable)
         .where(eq(exceptionsTable.timesheetId, row.id))
@@ -343,14 +353,14 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
    * a different body is rejected (ADR-0007).
    */
   async function withIdempotency<T>(
-    tx: Tx,
+    tx: ScopedTx,
     context: ActorContext,
     idempotencyKey: string,
     requestJson: string,
     responseSchema: z.ZodType<T>,
     produce: () => Promise<T>,
   ): Promise<T> {
-    const ledger = drizzle(tx);
+    const ledger = tx.db;
     const existing = await ledger
       .select()
       .from(idempotencyKeys)
@@ -408,7 +418,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
       const at = request.at ? new Date(request.at) : new Date();
       return withTransaction(async (tx) => {
         const employee = await loadEmployee(tx, context, request.employeeId);
-        const open = await drizzle(tx)
+        const open = await tx.db
           .select({ id: timesheetsTable.id })
           .from(timesheetsTable)
           .where(
@@ -424,7 +434,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
         }
 
         const timesheetId = crypto.randomUUID();
-        await drizzle(tx).insert(timesheetsTable).values({
+        await tx.db.insert(timesheetsTable).values({
           id: timesheetId,
           tenantId: context.tenantId,
           employeeId: request.employeeId,
@@ -440,7 +450,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
           { employeeId: request.employeeId, shiftId, timesheetId, at: at.toISOString() },
           { tenantId: context.tenantId, actor: actorFromContext(context, 'employee') },
         );
-        await enqueueEvents(tx, [event]);
+        await enqueueEvents(tx.raw, [event]);
 
         const row = await loadTimesheet(tx, context, timesheetId);
         const awardRule = await resolveAwardRule(tx, context, employee, at);
@@ -480,13 +490,14 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
           hourlyRateCents: employee.hourlyRateCents,
         });
 
-        const actorType = context.employeeId === request.employeeId ? 'employee' : 'system';
+        const selfClocked = context.employeeId === request.employeeId;
+        const actorType = selfClocked ? 'employee' : 'manager';
         const eventContext = { tenantId: context.tenantId, actor: actorFromContext(context, actorType) };
         const events: AnyWfmEvent[] = [];
         const exceptionRows: Array<typeof exceptionsTable.$inferInsert> = [];
 
         if (request.breakMinutesTaken > 0) {
-          await drizzle(tx).insert(breaksTable).values({
+          await tx.db.insert(breaksTable).values({
             id: crypto.randomUUID(),
             tenantId: context.tenantId,
             timesheetId: open.id,
@@ -601,9 +612,9 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
           );
         }
 
-        if (exceptionRows.length > 0) await drizzle(tx).insert(exceptionsTable).values(exceptionRows);
+        if (exceptionRows.length > 0) await tx.db.insert(exceptionsTable).values(exceptionRows);
 
-        await drizzle(tx)
+        await tx.db
           .update(timesheetsTable)
           .set({
             periodEnd: at,
@@ -623,7 +634,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
             id: crypto.randomUUID(),
             tenantId: context.tenantId,
             timesheetId: open.id,
-            payTypeCode: 'ORDINARY',
+            payTypeCode: 'ORD',
             description: 'Ordinary hours',
             minutes: totals.ordinaryMinutes,
             rateCents: employee.hourlyRateCents,
@@ -647,9 +658,9 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
             ),
           });
         }
-        if (payLineRows.length > 0) await drizzle(tx).insert(payLinesTable).values(payLineRows);
+        if (payLineRows.length > 0) await tx.db.insert(payLinesTable).values(payLineRows);
 
-        await enqueueEvents(tx, events);
+        await enqueueEvents(tx.raw, events);
 
         const closed = await loadTimesheet(tx, context, open.id);
         const { timesheet } = await buildTimesheet(tx, closed, rule);
@@ -683,7 +694,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
           }
 
           const adjustmentId = crypto.randomUUID();
-          await drizzle(tx).insert(adjustmentsTable).values({
+          await tx.db.insert(adjustmentsTable).values({
             id: adjustmentId,
             tenantId: context.tenantId,
             timesheetId,
@@ -695,7 +706,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
             idempotencyKey,
           });
 
-          await drizzle(tx)
+          await tx.db
             .update(timesheetsTable)
             .set({
               ordinaryMinutes,
@@ -715,14 +726,14 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
             centsDelta: number,
             lineMultiplier: string,
           ): Promise<void> {
-            const existingRows = await drizzle(tx)
+            const existingRows = await tx.db
               .select()
               .from(payLinesTable)
               .where(and(eq(payLinesTable.timesheetId, timesheetId), eq(payLinesTable.payTypeCode, payTypeCode)))
               .limit(1);
             const existing = existingRows[0];
             if (existing) {
-              await drizzle(tx)
+              await tx.db
                 .update(payLinesTable)
                 .set({
                   minutes: existing.minutes + minutesDelta,
@@ -732,7 +743,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
               return;
             }
             if (minutesDelta === 0) return;
-            await drizzle(tx).insert(payLinesTable).values({
+            await tx.db.insert(payLinesTable).values({
               id: crypto.randomUUID(),
               tenantId: context.tenantId,
               timesheetId,
@@ -747,7 +758,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
 
           if (request.unpaidBreakMinutesDelta !== 0) {
             await applyLineDelta(
-              'ORDINARY',
+              'ORD',
               'Missed unpaid break compensated at the ordinary rate',
               request.unpaidBreakMinutesDelta,
               unpaidImpact,
@@ -777,7 +788,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
             },
             { tenantId: context.tenantId, actor: actorFromContext(context) },
           );
-          await enqueueEvents(tx, [event]);
+          await enqueueEvents(tx.raw, [event]);
 
           return {
             timesheetId,
@@ -792,7 +803,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
     },
 
     async decideApproval(context, timesheetId, idempotencyKey, request) {
-      const produce = async (tx: Tx): Promise<ApprovalResponse> => {
+      const produce = async (tx: ScopedTx): Promise<ApprovalResponse> => {
         const row = await loadTimesheet(tx, context, timesheetId);
         if (row.status === 'approved') {
           throw new DomainError(errorCodes.conflict, 409, 'timesheet is already approved');
@@ -802,7 +813,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
         const rule = await resolveAwardRule(tx, context, employee, row.periodEnd ?? row.periodStart);
 
         if (request.decision === 'reject') {
-          await drizzle(tx)
+          await tx.db
             .update(timesheetsTable)
             .set({ status: 'open', updatedAt: new Date() })
             .where(eq(timesheetsTable.id, timesheetId));
@@ -813,7 +824,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
         if (!row.periodEnd) {
           throw new DomainError(errorCodes.preconditionFailed, 412, 'clock out before approving');
         }
-        await drizzle(tx)
+        await tx.db
           .update(timesheetsTable)
           .set({ status: 'approved', updatedAt: new Date() })
           .where(eq(timesheetsTable.id, timesheetId));
@@ -829,7 +840,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
           },
           { tenantId: context.tenantId, actor: actorFromContext(context) },
         );
-        await enqueueEvents(tx, [event]);
+        await enqueueEvents(tx.raw, [event]);
 
         const approved = { ...row, status: 'approved' as const };
         return { timesheet: (await buildTimesheet(tx, approved, rule)).timesheet };
@@ -862,7 +873,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
         const minutesLate = request.minutesLate ?? 0;
         const detail = `Employee did not attend shift ${row.shiftId} (start ${shiftStartsAt}); recorded ${minutesLate} min late.`;
 
-        await drizzle(tx).insert(exceptionsTable).values({
+        await tx.db.insert(exceptionsTable).values({
           id: crypto.randomUUID(),
           tenantId: context.tenantId,
           timesheetId,
@@ -886,13 +897,13 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
           },
           { tenantId: context.tenantId, actor: actorFromContext(context, 'manager') },
         );
-        await enqueueEvents(tx, [event]);
+        await enqueueEvents(tx.raw, [event]);
         return { emittedEvents: ['attendance.no_show'] };
       });
     },
 
     async close() {
-      await sql.end({ timeout: 5 });
+      await database.sql.end({ timeout: 5 });
     },
   };
 }

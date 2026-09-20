@@ -29,5 +29,5 @@ export class DomainClientError extends Error {
 }
 
 export class EnginePermanentError extends Error {
-  override readonly name = 'EnginePermanentError';
+  override readonly name: string = 'EnginePermanentError';
 }

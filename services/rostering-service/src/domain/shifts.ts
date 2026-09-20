@@ -229,8 +229,14 @@ export async function cancelShift(
       Math.round(((shift.startsAt.getTime() - ctx.now.getTime()) / 3_600_000) * 100) / 100,
     );
 
+    // An employee calling in sick vacates the shift: it returns to the open
+    // pool so the coverage workflow can fill it. Cancelling the shift itself
+    // (nobody named) is terminal.
+    const vacatedByEmployee = body.cancelledByEmployeeId !== undefined;
+    const nextStatus = vacatedByEmployee ? 'published' : 'cancelled';
+
     await tx`
-      UPDATE shifts SET status = 'cancelled', assigned_employee_id = NULL WHERE id = ${shiftId}
+      UPDATE shifts SET status = ${nextStatus}, assigned_employee_id = NULL WHERE id = ${shiftId}
     `;
 
     const event = makeEvent(
@@ -248,7 +254,7 @@ export async function cancelShift(
       eventContextOf(ctx),
     );
 
-    const cancelled: ShiftRow = { ...shift, status: 'cancelled', assignedEmployeeId: null };
+    const cancelled: ShiftRow = { ...shift, status: nextStatus, assignedEmployeeId: null };
     return { status: 200, body: shiftDto(cancelled), events: [event] };
   });
 }

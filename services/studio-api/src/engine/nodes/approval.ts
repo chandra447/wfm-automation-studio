@@ -2,15 +2,21 @@ import { interrupt } from '@langchain/langgraph';
 import { type AnyWfmEvent } from '@wfm/contracts';
 import {
   candidateChoiceOutputSchema,
-  coveragePlanOutputSchema,
   timesheetAdjustmentOutputSchema,
   type HumanApprovalNode,
+  type WorkflowNode,
 } from '@wfm/workflows';
+import { coveragePlanOutputSchema } from './proposers.ts';
 import { appendAudit, appendRunEvent, getFirstRunEvent, insertApproval, listApprovalsForNode } from '../run-store.ts';
 import { publishApprovalRequested } from '../events.ts';
 import type { ApprovalRow, RunDb } from '../run-store.ts';
 import type { ResumePayload, RunScope, RunStateFields } from '../state.ts';
 import type { ExecutorDeps } from './context.ts';
+
+interface ApprovalPause {
+  decision: 'pending';
+  approvalId: string;
+}
 
 interface Proposal {
   action: string;
@@ -42,6 +48,7 @@ function findProposal(state: RunStateFields): Proposal | null {
       return {
         action: 'rostering.send_offers',
         rationale: candidate.data.rationale,
+        evidence: candidate.data.evidence,
         payImpactCents: candidate.data.costDeltaCents,
         payload: candidate.data,
       };
@@ -51,6 +58,7 @@ function findProposal(state: RunStateFields): Proposal | null {
       return {
         action: 'time_attendance.apply_adjustment',
         rationale: adjustment.data.rationale,
+        evidence: adjustment.data.evidence,
         payImpactCents: adjustment.data.payImpactCents,
         payload: adjustment.data,
       };
@@ -60,6 +68,7 @@ function findProposal(state: RunStateFields): Proposal | null {
       return {
         action: 'coverage_plan',
         rationale: plan.data.rationale,
+        evidence: plan.data.evidence,
         payImpactCents: plan.data.costDeltaCents,
         payload: plan.data,
       };
@@ -78,9 +87,10 @@ function findProposal(state: RunStateFields): Proposal | null {
 export async function runApprovalNode(
   scope: RunScope,
   deps: ExecutorDeps,
-  node: HumanApprovalNode,
+  node: WorkflowNode,
   state: RunStateFields,
 ): Promise<Pick<RunStateFields, 'nodes' | 'cursor' | 'decision'>> {
+  if (node.type !== 'human_approval') throw new Error(`${node.type} executor reached with a ${node.type} node`);
   const rows = await listApprovalsForNode(deps.db, scope.runId, node.id);
 
   const decided = rows.find((row) => row.status === 'approved' || row.status === 'rejected');
@@ -114,7 +124,7 @@ export async function runApprovalNode(
     pending = await createApproval(scope, deps, node, state, role);
   }
 
-  const first = interrupt<ResumePayload>({
+  const first = interrupt<ApprovalPause, ResumePayload>({
     decision: 'pending',
     approvalId: pending.approvalId,
   });
@@ -122,7 +132,7 @@ export async function runApprovalNode(
     return decisionResult(node.id, first);
   }
 
-  const second = interrupt<ResumePayload>({
+  const second = interrupt<ApprovalPause, ResumePayload>({
     decision: 'pending',
     approvalId: first.approvalId,
   });
@@ -262,6 +272,7 @@ async function createApproval(
     payImpactCents: row.payImpactCents,
   });
   await deps.queue.scheduleApprovalTimeout({
+    tenantId: scope.tenantId,
     runId: scope.runId,
     approvalId: row.approvalId,
     runAt: row.expiresAt,

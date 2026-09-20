@@ -1,4 +1,4 @@
-import type { AnyWfmEvent } from '@wfm/contracts';
+import { parseEvent, type AnyWfmEvent } from '@wfm/contracts';
 import type { EventBus } from '@wfm/eventbus';
 import type { Sql } from 'postgres';
 
@@ -45,27 +45,33 @@ export async function ensureOutboxTable(sql: Sql, options: OutboxOptions = {}): 
 }
 
 /**
+ * The minimum a caller must provide to enqueue: postgres.js's `unsafe`. Both
+ * `Sql` and `TransactionSql` satisfy it structurally, which is what lets a
+ * service pass the transaction it is already inside without a cast.
+ */
+export interface OutboxExecutor {
+  unsafe: Sql['unsafe'];
+}
+
+/**
  * Inserts events into the outbox. Call inside the same transaction as the
  * domain write; that is the whole point of the pattern.
  */
 export async function enqueueEvents(
-  tx: Sql,
+  tx: OutboxExecutor,
   events: readonly AnyWfmEvent[],
   options: OutboxOptions = {},
 ): Promise<void> {
   if (events.length === 0) return;
   const table = options.table ?? 'outbox';
-  const rows = events.map((event) => ({
-    id: crypto.randomUUID(),
-    tenant_id: event.tenantId,
-    event_id: event.eventId,
-    event_type: event.eventType,
-    payload: event,
-  }));
-  await tx`
-    INSERT INTO ${tx(table)} ${tx(rows, 'id', 'tenant_id', 'event_id', 'event_type', 'payload')}
-    ON CONFLICT (event_id) DO NOTHING
-  `;
+  for (const event of events) {
+    await tx.unsafe(
+      `INSERT INTO ${table} (id, tenant_id, event_id, event_type, payload)
+       VALUES ($1, $2, $3, $4, $5::jsonb)
+       ON CONFLICT (event_id) DO NOTHING`,
+      [crypto.randomUUID(), event.tenantId, event.eventId, event.eventType, event],
+    );
+  }
 }
 
 export class OutboxPublisher {
@@ -133,7 +139,7 @@ export class OutboxPublisher {
   }
 
   async #publishBatch(): Promise<number> {
-    const claimed = await this.#sql<Array<{ id: string; tenant_id: string; payload: AnyWfmEvent }>>`
+    const claimed = await this.#sql<Array<{ id: string; tenant_id: string; payload_text: string }>>`
       UPDATE ${this.#sql(this.#table)} SET claimed_at = now()
       WHERE id IN (
         SELECT id FROM ${this.#sql(this.#table)}
@@ -144,14 +150,29 @@ export class OutboxPublisher {
         LIMIT ${this.#batchSize}
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING id, tenant_id, payload
+      RETURNING id, tenant_id, payload::text AS payload_text
     `;
 
     if (claimed.length === 0) return 0;
 
     for (const row of claimed) {
+      let event: AnyWfmEvent;
       try {
-        await this.#bus.publish(row.tenant_id, row.payload);
+        // Read the payload as text and parse it here: the driver's jsonb
+        // handling varies by runtime, and the envelope must be an object.
+        event = parseEvent(JSON.parse(row.payload_text));
+      } catch (error) {
+        await this.#sql`
+          UPDATE ${this.#sql(this.#table)}
+          SET attempts = attempts + 1, claimed_at = NULL, available_at = now() + interval '1 minute'
+          WHERE id = ${row.id}
+        `;
+        this.#onError(error, null);
+        continue;
+      }
+
+      try {
+        await this.#bus.publish(row.tenant_id, event);
         await this.#sql`
           UPDATE ${this.#sql(this.#table)} SET published_at = now(), attempts = attempts + 1
           WHERE id = ${row.id}
@@ -164,7 +185,7 @@ export class OutboxPublisher {
               available_at = now() + (least(60, power(2, least(attempts, 6))) || ' seconds')::interval
           WHERE id = ${row.id}
         `;
-        this.#onError(error, row.payload);
+        this.#onError(error, event);
       }
     }
 

@@ -26,7 +26,7 @@ export function BuilderNode({ data, selected }: NodeProps<BuilderFlowNode>) {
   return (
     <div
       className={cn(
-        'rounded-[var(--radius-card)] border bg-[var(--color-surface-raised)] shadow-lg transition-shadow',
+        'relative rounded-[var(--radius-card)] border bg-[var(--color-surface-raised)] shadow-lg transition-shadow',
         'w-[220px] min-h-[88px] px-3 py-2.5',
         errors.length > 0 ? 'border-[var(--color-danger)]' : 'border-[var(--color-border-subtle)]',
         selected && 'ring-2 ring-[var(--color-primary)]',
@@ -75,7 +75,7 @@ export function BuilderNode({ data, selected }: NodeProps<BuilderFlowNode>) {
             {ports.length > 1 && (
               <span
                 className="pointer-events-none absolute text-[9px] uppercase tracking-wide text-[var(--color-ink-faint)]"
-                style={{ top: `calc(${top} - 6px)`, right: 6 }}
+                style={{ top: `calc(${top} - 6px)`, right: -34 }}
               >
                 {portLabels[port]}
               </span>
