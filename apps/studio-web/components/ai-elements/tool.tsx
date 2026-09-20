@@ -13,7 +13,7 @@ import {
   CheckCircle,
   Circle,
   Clock,
-  Wrench,
+  Robot,
   XCircle,
 } from "@phosphor-icons/react";
 import type { ComponentProps, ReactNode } from "react";
@@ -91,7 +91,7 @@ export const ToolHeader = ({
       {...props}
     >
       <div className="flex items-center gap-2">
-        <Wrench className="size-4 text-muted-foreground" />
+        <Robot className="size-4 text-muted-foreground" weight="duotone" />
         <span className="font-medium text-sm">{title ?? derivedName}</span>
         {getStatusBadge(state)}
       </div>
