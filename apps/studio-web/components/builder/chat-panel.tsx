@@ -8,6 +8,7 @@ import type {
   BuilderChatRequest,
   BuilderChatResponse,
   BuilderFocus,
+  BuilderStreamEvent,
   BuilderToolCall,
 } from '@wfm/workflows';
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation';
@@ -48,7 +49,8 @@ const STEP_LIMIT = 4;
  * in-memory message rather than being persisted with the conversation.
  */
 interface TurnMessage extends BuilderChatMessage {
-  steps?: readonly string[];
+  /** The calls the turn made, kept from the live turn so the trail stays openable. */
+  calls?: readonly BuilderToolCall[];
   focus?: BuilderFocus;
 }
 
@@ -86,13 +88,18 @@ function AgentRow({ children }: { children: ReactNode }) {
   );
 }
 
-/** A tool call as it happens: what was asked, and what came back. */
+/**
+ * A tool call as it happens and after the turn is over: the name and its state
+ * on the row, the arguments and the result a click away. Collapsed by default,
+ * because a turn that calls a dozen tools would otherwise push its own answer
+ * off the panel.
+ */
 function ToolRow({ call }: { call: BuilderToolCall }) {
   return (
-    <Tool className="mb-0 w-full" defaultOpen>
+    <Tool className="mb-0 w-full">
       <ToolHeader type="dynamic-tool" state={toolState[call.state]} toolName={call.name} />
       <ToolContent>
-        <ToolInput input={call.input} />
+        {call.input !== null && <ToolInput input={call.input} />}
         <ToolOutput errorText={call.error ?? undefined} output={call.output} />
       </ToolContent>
     </Tool>
@@ -117,7 +124,7 @@ function TurnHeader({ role, at }: { role: 'Agent' | 'You'; at?: string }) {
 
 function Turn({ message }: { message: TurnMessage }) {
   const assistant = message.role === 'assistant';
-  const steps = message.steps ?? [];
+  const calls = message.calls ?? [];
   const focus = message.focus === undefined ? null : focusSummary(message.focus);
 
   const content = (
@@ -150,39 +157,32 @@ function Turn({ message }: { message: TurnMessage }) {
             ))}
           </ul>
         )}
-        {assistant && (steps.length > 0 || focus !== null) && (
-          <ul className="flex min-w-0 flex-col gap-0.5 font-mono text-[10px] leading-snug text-[var(--color-ink-faint)]">
+        {assistant && (calls.length > 0 || focus !== null) && (
+          <div className="flex min-w-0 flex-col gap-0.5">
             {focus !== null && (
-              <li className="truncate" title={focus}>
+              <span className="truncate font-mono text-[10px] leading-snug text-[var(--color-ink-faint)]" title={focus}>
                 {focus}
-              </li>
+              </span>
             )}
-            {/* A turn that called a dozen tools would otherwise push its own
-                answer off the panel, so past the limit the trail is a count the
-                author can open when they want the detail. */}
-            {steps.length > STEP_LIMIT ? (
-              <li>
-                <details>
-                  <summary className="cursor-pointer select-none hover:text-[var(--color-ink-muted)]">
-                    {plural(steps.length, 'step')}
-                  </summary>
-                  <ul className="flex min-w-0 flex-col gap-0.5 pt-0.5">
-                    {steps.map((step, index) => (
-                      <li key={`${step}:${index}`} className="truncate" title={step}>
-                        {step}
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              </li>
+            {/* The same rows the turn showed while it ran, so a call can be
+                opened afterwards to read what it was asked and what it said. */}
+            {calls.length > STEP_LIMIT ? (
+              <details>
+                <summary className="cursor-pointer font-mono text-[10px] leading-snug text-[var(--color-ink-faint)] select-none hover:text-[var(--color-ink-muted)]">
+                  {plural(calls.length, 'step')}
+                </summary>
+                <div className="flex min-w-0 flex-col gap-0.5 pt-1">
+                  {calls.map((call) => (
+                    <ToolRow key={call.id} call={call} />
+                  ))}
+                </div>
+              </details>
             ) : (
-              steps.map((step, index) => (
-                <li key={`${step}:${index}`} className="truncate" title={step}>
-                  {step}
-                </li>
+              calls.map((call) => (
+                <ToolRow key={call.id} call={call} />
               ))
             )}
-          </ul>
+          </div>
         )}
         {assistant && message.model !== null && (
           <span className="text-[10px] text-[var(--color-ink-faint)]">{message.model}</span>
@@ -248,6 +248,20 @@ export function ChatPanel({
   const headersRef = useRef(headers);
   headersRef.current = headers;
   const inFlightRef = useRef<AbortController | null>(null);
+  /** The live turn, readable from the stream callback without a stale render. */
+  const liveRef = useRef<LiveTurn | null>(null);
+
+  const pushLive = (event: BuilderStreamEvent): void => {
+    const next = applyStreamEvent(liveRef.current ?? emptyLiveTurn, event);
+    liveRef.current = next;
+    setLive(next);
+  };
+
+  const clearLive = (): void => {
+    liveRef.current = null;
+    setLive(null);
+  };
+
   /** A send that lands before the history read does not get overwritten by it. */
   const sentRef = useRef(false);
 
@@ -338,6 +352,7 @@ export function ChatPanel({
       ]);
       setError(null);
       setLive(emptyLiveTurn);
+      liveRef.current = emptyLiveTurn;
       setSending(true);
 
       const controller = new AbortController();
@@ -353,12 +368,15 @@ export function ChatPanel({
           (event) => {
             if (event.type === 'focus') {
               onFocus(event.focus);
-              setLive((previous) => (previous === null ? previous : applyStreamEvent(previous, event)));
+              pushLive(event);
               return;
             }
             if (event.type === 'done') {
               finished = true;
               const response = event.response;
+              // Read before the update is queued: the updater runs after the
+              // live turn is cleared, so it would find nothing left to keep.
+              const calls = liveRef.current?.calls ?? [];
               setMessages((previous) => [
                 ...previous,
                 {
@@ -369,7 +387,7 @@ export function ChatPanel({
                   model: response.model,
                   applied: response.applied,
                   rejected: response.rejected,
-                  steps: response.steps,
+                  calls,
                   focus: response.focus,
                 },
               ]);
@@ -378,26 +396,26 @@ export function ChatPanel({
                 response.diagnostics,
                 response.focus,
               );
-              setLive(null);
+              clearLive();
               return;
             }
             if (event.type === 'error') {
               setError(event.message);
-              setLive(null);
+              clearLive();
               return;
             }
-            setLive((previous) => applyStreamEvent(previous ?? emptyLiveTurn, event));
+            pushLive(event);
           },
           controller.signal,
         );
         if (!finished && !controller.signal.aborted) {
           setError('The turn ended before the agent answered.');
-          setLive(null);
+          clearLive();
         }
       } catch (cause) {
         // A stop the reader asked for is not a failure to report.
         if (!controller.signal.aborted) setError(failureLine(cause));
-        setLive(null);
+        clearLive();
       } finally {
         // A turn that was stopped and replaced must not clear the new one's state.
         if (inFlightRef.current === controller) {
