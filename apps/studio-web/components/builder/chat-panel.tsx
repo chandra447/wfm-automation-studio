@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { ModelDescriptor, ProviderSettings } from '@wfm/contracts';
-import type { BuilderChatMessage, BuilderChatRequest, BuilderChatResponse } from '@wfm/workflows';
+import type { BuilderChatMessage, BuilderChatRequest, BuilderChatResponse, BuilderFocus } from '@wfm/workflows';
 import { ApiFailure, apiFetch, fetchBuilderChat, sendBuilderMessage } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -20,13 +20,40 @@ import type { BuilderSnapshot } from './state';
  */
 const TENANT_DEFAULT = 'tenant-default';
 
+/** Past this many tool calls the trail collapses to its count. */
+const STEP_LIMIT = 4;
+
+/**
+ * The stored thread carries only what the panel always renders. The tool trail
+ * and the focus belong to the turn this session sent, so they ride on the
+ * in-memory message rather than being persisted with the conversation.
+ */
+interface TurnMessage extends BuilderChatMessage {
+  steps?: readonly string[];
+  focus?: BuilderFocus;
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+/** `pointed at 3 nodes`, or `pointed at 1 node and 2 edges`; null when it pointed at nothing. */
+function focusSummary(focus: BuilderFocus): string | null {
+  const parts: string[] = [];
+  if (focus.nodeIds.length > 0) parts.push(plural(focus.nodeIds.length, 'node'));
+  if (focus.edgeIds.length > 0) parts.push(plural(focus.edgeIds.length, 'edge'));
+  return parts.length === 0 ? null : `pointed at ${parts.join(' and ')}`;
+}
+
 function failureLine(cause: unknown): string {
   if (cause instanceof ApiFailure) return `HTTP ${cause.status} — ${cause.message}`;
   return 'The Studio API is unreachable.';
 }
 
-function Turn({ message }: { message: BuilderChatMessage }) {
+function Turn({ message }: { message: TurnMessage }) {
   const assistant = message.role === 'assistant';
+  const steps = message.steps ?? [];
+  const focus = message.focus === undefined ? null : focusSummary(message.focus);
   return (
     <article
       className={cn(
@@ -71,6 +98,40 @@ function Turn({ message }: { message: BuilderChatMessage }) {
           ))}
         </ul>
       )}
+      {assistant && (steps.length > 0 || focus !== null) && (
+        <ul className="flex min-w-0 flex-col gap-0.5 font-mono text-[10px] leading-snug text-[var(--color-ink-faint)]">
+          {focus !== null && (
+            <li className="truncate" title={focus}>
+              {focus}
+            </li>
+          )}
+          {/* A turn that called a dozen tools would otherwise push its own
+              answer off the panel, so past the limit the trail is a count the
+              author can open when they want the detail. */}
+          {steps.length > STEP_LIMIT ? (
+            <li>
+              <details>
+                <summary className="cursor-pointer select-none hover:text-[var(--color-ink-muted)]">
+                  {plural(steps.length, 'step')}
+                </summary>
+                <ul className="flex min-w-0 flex-col gap-0.5 pt-0.5">
+                  {steps.map((step, index) => (
+                    <li key={`${step}:${index}`} className="truncate" title={step}>
+                      {step}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </li>
+          ) : (
+            steps.map((step, index) => (
+              <li key={`${step}:${index}`} className="truncate" title={step}>
+                {step}
+              </li>
+            ))
+          )}
+        </ul>
+      )}
       {assistant && message.model !== null && (
         <span className="text-[10px] text-[var(--color-ink-faint)]">{message.model}</span>
       )}
@@ -92,10 +153,10 @@ export function ChatPanel({
   snapshot: BuilderSnapshot;
   eventType: string;
   disabled: boolean;
-  /** Receives the graph the turn produced, and the diagnostics it carries. */
-  onApplied: (snapshot: BuilderSnapshot, diagnostics: BuilderChatResponse['diagnostics']) => void;
+  /** Receives the graph the turn produced, the diagnostics it carries, and what it asked the canvas to point at. */
+  onApplied: (snapshot: BuilderSnapshot, diagnostics: BuilderChatResponse['diagnostics'], focus: BuilderFocus) => void;
 }) {
-  const [messages, setMessages] = useState<readonly BuilderChatMessage[]>([]);
+  const [messages, setMessages] = useState<readonly TurnMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -206,9 +267,11 @@ export function ChatPanel({
           model: response.model,
           applied: response.applied,
           rejected: response.rejected,
+          steps: response.steps,
+          focus: response.focus,
         },
       ]);
-      onApplied({ definition: response.definition, layout: response.layout }, response.diagnostics);
+      onApplied({ definition: response.definition, layout: response.layout }, response.diagnostics, response.focus);
     } catch (cause) {
       setError(failureLine(cause));
     } finally {

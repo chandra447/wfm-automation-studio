@@ -153,6 +153,22 @@ function ZoomControl() {
   );
 }
 
+/**
+ * Focus is an agent affordance rather than a selection: a turn that asks the
+ * canvas to point at nodes frames them and changes nothing else. Like the zoom
+ * readout it reads the store the canvas writes, so it sits inside the provider,
+ * and `fitView` resolves once the nodes are measured, so a turn that also
+ * created them still lands.
+ */
+function FocusViewport({ nodeIds }: { nodeIds: readonly string[] }) {
+  const { fitView } = useReactFlow();
+  useEffect(() => {
+    if (nodeIds.length === 0) return;
+    void fitView({ nodes: nodeIds.map((id) => ({ id })), duration: 400, padding: 0.3 });
+  }, [nodeIds, fitView]);
+  return null;
+}
+
 function Banner({ tone, children }: { tone: 'warning' | 'danger'; children: ReactNode }) {
   return (
     <div
@@ -315,6 +331,9 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // The agent's highlight, deliberately apart from `selectedId`: pointing at a
+  // node must not open the inspector, and the author's next click clears it.
+  const [focusedIds, setFocusedIds] = useState<readonly string[]>([]);
   const [restoreOffer, setRestoreOffer] = useState<{ savedAt: number; snapshot: BuilderSnapshot } | null>(null);
   const [conflict, setConflict] = useState(false);
   const [serverDiagnostics, setServerDiagnostics] = useState<readonly Diagnostic[] | null>(null);
@@ -358,8 +377,8 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
   // across the re-renders that would otherwise un-initialise the canvas.
   const flowNodeCache = useRef(createFlowNodeCache());
   const flowNodes = useMemo(
-    () => toFlowNodes(snapshot.definition, snapshot.layout, grouped, selectedId, flowNodeCache.current),
-    [snapshot, grouped, selectedId],
+    () => toFlowNodes(snapshot.definition, snapshot.layout, grouped, selectedId, flowNodeCache.current, focusedIds),
+    [snapshot, grouped, selectedId, focusedIds],
   );
   const flowEdges = useMemo(() => toFlowEdges(snapshot.definition), [snapshot.definition]);
   const selectedNode: WorkflowNode | null = useMemo(
@@ -541,6 +560,10 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
   const selectNode = useCallback((nodeId: string | null) => {
     setSelectedId(nodeId);
     setInspectorDismissedFor(null);
+    // The author's own selection takes over from the agent's highlight, so the
+    // canvas never carries a stale one behind a fresh inspector. Keeping the
+    // reference when there is nothing to clear spares a canvas re-render.
+    setFocusedIds((current) => (current.length === 0 ? current : []));
   }, []);
 
   const deleteNode = useCallback((nodeId: string) => {
@@ -558,10 +581,9 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
         { ...defaultNode(nodeType), id },
         { x: (-viewport.x + 360) / viewport.zoom, y: (-viewport.y + 240) / viewport.zoom },
       );
-      setSelectedId(id);
-      setInspectorDismissedFor(null);
+      selectNode(id);
     },
-    [],
+    [selectNode],
   );
 
   const restoreDraft = () => {
@@ -634,11 +656,14 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
           snapshot={snapshot}
           eventType={triggerEventType}
           disabled={!loaded || offline}
-          onApplied={(next, nextDiagnostics) => {
+          onApplied={(next, nextDiagnostics, focus) => {
             // The agent's graph is unsaved work like any other edit, so it is
             // mirrored and the previous graph stays undoable.
             store.applyExternal(next);
             setServerDiagnostics(null);
+            // Pointing is not selecting: the ring and the frame are the whole
+            // affordance, so the inspector and `selectedId` stay untouched.
+            setFocusedIds(focus.nodeIds);
             if (nextDiagnostics.length > 0) setDiagnosticsOpen(true);
           }}
         />
@@ -740,7 +765,12 @@ export function BuilderCanvasPage({ workflowId }: { workflowId: string }) {
               hasServerRejection={serverDiagnostics !== null && serverDiagnostics.length > 0}
             />
           }
-          bottomRight={<ZoomControl />}
+          bottomRight={
+            <>
+              <ZoomControl />
+              <FocusViewport nodeIds={focusedIds} />
+            </>
+          }
           side={
             <>
               {inspectorOpen && (
