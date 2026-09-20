@@ -88,6 +88,20 @@ totals are compared against the `llm_calls` rows, not against a number the engin
 - **A conversation that stays inside its budget.** The turn above made 14 model calls and cost 137k input tokens, most of them tool results the agent had already read. The agent summarizes its own history once the conversation passes a token threshold and keeps the recent exchanges, so the twelfth turn does not pay for the first. Summary calls are ordinary model calls: they land in the same accounting table as everything else.
 - **A builder that gets out of the way.** The graph owns the screen. The component list, the agent conversation, the node inspector, the validation log, and the zoom control all float over it, and the components panel is closed until you ask for it. Each node card carries its kind's icon, name, one-line purpose, the fields that matter for that kind editable in place, and one labelled row per port with the handle on the card's edge.
 
+## Stack
+
+| Layer | Choice | Why this one |
+|---|---|---|
+| Runtime | **Bun** | One binary runs the services, the package manager, the test runner and the bundler, and it ships its own SQL and Redis clients, so the tree carries fewer drivers. |
+| HTTP | **Elysia** | Routes declare their schemas once, which gives validation at the edge and a typed client for free: the browser imports the server's route types through Eden instead of a hand-written API layer. |
+| UI | **Next.js** | The canvas is a stateful client tree inside a server-rendered shell, and the App Router supplies routing, fonts and bundling without a second build pipeline. |
+| Canvas | **React Flow** | Nodes, ports, edges, selection and viewport maths are the entire problem on that screen, and it is the library the design community already reads. |
+| Queue | **BullMQ** | Retries with exponential backoff, delayed jobs and concurrency out of the box, which is exactly what run execution and approval timeouts need. |
+| Database | **Postgres** | One transactional store per service, so a domain write and its outbox rows commit together, with JSONB for the graph and the tables the LangGraph checkpointer needs. |
+| Bus | **Redis** | Redis Streams with consumer groups gives at-least-once delivery and a dead-letter path locally, behind a port that Azure Event Hubs satisfies in production. |
+| Graph | **LangGraph.js** | A compiled state machine with a real interrupt, so a run can park on an approval for hours and resume from a checkpoint instead of holding a process open. |
+| Model | **LangChain + Deep Agents** | The builder agent needs a tool loop with middleware; the adapter underneath is ours, so no vendor SDK reaches the domain and a tenant can bring its own endpoint. |
+
 ## Architecture
 
 ```mermaid
@@ -175,7 +189,7 @@ Both are driven by the services, not by a test hook. The simulator calls the sam
 
 ## How it is built
 
-- **Runtime and types.** Bun, strict TypeScript, no `any`, external data parsed at boundaries with zod. The runtime's own clients are preferred over npm drivers where it has them, which is a deliberate trade: the code is Bun-specific rather than portable to Node. The UI imports the server's route types through Elysia's Eden treaty.
+- **Types.** Strict TypeScript, no `any`, external data parsed at boundaries with zod.
 - **Data.** Postgres with Drizzle ORM over Bun's built-in SQL client, one database per service. A domain write and its outbox rows share a transaction, which is what makes at-least-once publication safe.
 - **Events.** One envelope shape everywhere, versioned, tenant-partitioned, carrying correlation, causation, and trace context. Payloads carry identity, not truth, so consumers re-read current state. This mirrors the skinny webhooks Humanforce HR already emits. The Redis Streams binding runs on Bun's own Redis client, so our packages carry no Redis driver; BullMQ brings its own, which is a property of that library rather than a choice here.
 - **Execution.** BullMQ owns retries, backoff, delayed approval timeouts, and concurrency. LangGraph owns the graph and the interrupt. Our orchestrator owns the run record, the audit, and the timeline.
