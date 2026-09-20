@@ -9,7 +9,6 @@
   "dependencies": {
     "@wfm/contracts": "workspace:*",
     "@wfm/eventbus": "workspace:*",
-    "@wfm/observability": "workspace:*",
-    "postgres": "^3.4.7"
+    "@wfm/observability": "workspace:*"
   }
 }

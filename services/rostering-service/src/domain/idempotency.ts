@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { AnyWfmEvent } from '@wfm/contracts';
 import { enqueueEvents } from '@wfm/outbox';
-import type { Sql } from 'postgres';
+import type { SQL } from 'bun';
 import type { Tx } from '../db/rows.ts';
 import { IdempotencyMismatchError } from './errors.ts';
 
@@ -41,7 +41,7 @@ export function requestHashOf(body: unknown): string {
 }
 
 export async function withIdempotency(
-  sql: Sql,
+  sql: SQL,
   tenantId: string,
   key: string,
   requestHash: string,
@@ -64,13 +64,13 @@ export async function withIdempotency(
     await enqueueEvents(tx, outcome.events);
     await tx`
       INSERT INTO idempotency_keys (tenant_id, key, request_hash, response)
-      VALUES (${tenantId}, ${key}, ${requestHash}, ${tx.json(outcome.body as never)})
+      VALUES (${tenantId}, ${key}, ${requestHash}, ${outcome.body})
     `;
     return { status: outcome.status, body: outcome.body, events: outcome.events, replayed: false };
   });
 }
 
-export async function withoutIdempotency(sql: Sql, run: (tx: Tx) => Promise<CommandOutcome>): Promise<CommandResult> {
+export async function withoutIdempotency(sql: SQL, run: (tx: Tx) => Promise<CommandOutcome>): Promise<CommandResult> {
   return sql.begin(async (tx) => {
     const outcome = await run(tx);
     await enqueueEvents(tx, outcome.events);
@@ -79,7 +79,7 @@ export async function withoutIdempotency(sql: Sql, run: (tx: Tx) => Promise<Comm
 }
 
 export async function runKeyed(
-  sql: Sql,
+  sql: SQL,
   tenantId: string,
   idempotencyKey: string | undefined,
   body: unknown,

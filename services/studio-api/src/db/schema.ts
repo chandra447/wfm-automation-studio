@@ -1,5 +1,14 @@
-import { pgTable, integer, jsonb, text, timestamp, uuid, bigserial, boolean, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { pgTable, integer, customType, text, timestamp, uuid, bigserial, boolean, uniqueIndex, index } from 'drizzle-orm/pg-core';
 import type { CanvasLayout, Diagnostic, WorkflowDefinition } from '@wfm/workflows';
+
+// drizzle's jsonb() stringifies the value, and Bun then encodes the string a
+// second time, so the column ends up as a jsonb string scalar. This passthrough
+// custom type hands the JS object straight to the driver.
+const jsonbObject = customType<{ data: unknown; driverData: unknown }>({
+  dataType() {
+    return 'jsonb';
+  },
+});
 
 /**
  * Studio persistence. Workflow definitions are versioned and immutable once
@@ -31,9 +40,9 @@ export const workflowVersions = pgTable(
     tenantId: uuid('tenant_id').notNull(),
     versionNumber: integer('version_number').notNull(),
     status: text('status', { enum: ['draft', 'published'] }).notNull(),
-    definition: jsonb('definition').$type<WorkflowDefinition>().notNull(),
-    layout: jsonb('layout').$type<CanvasLayout>().notNull(),
-    diagnostics: jsonb('diagnostics').$type<Diagnostic[]>().notNull().default([]),
+    definition: jsonbObject('definition').$type<WorkflowDefinition>().notNull(),
+    layout: jsonbObject('layout').$type<CanvasLayout>().notNull(),
+    diagnostics: jsonbObject('diagnostics').$type<Diagnostic[]>().notNull().default([]),
     createdBy: text('created_by').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -82,7 +91,7 @@ export const runEvents = pgTable(
     nodeId: text('node_id'),
     title: text('title').notNull(),
     detail: text('detail').notNull().default(''),
-    data: jsonb('data'),
+    data: jsonbObject('data'),
   },
   (table) => [uniqueIndex('run_events_seq_unique').on(table.runId, table.seq)],
 );
@@ -102,7 +111,7 @@ export const approvals = pgTable(
     requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     payImpactCents: integer('pay_impact_cents').notNull().default(0),
-    proposal: jsonb('proposal').notNull(),
+    proposal: jsonbObject('proposal').notNull(),
     decidedBy: text('decided_by'),
     decisionReason: text('decision_reason'),
     decidedAt: timestamp('decided_at', { withTimezone: true }),
@@ -141,7 +150,7 @@ export const auditLog = pgTable(
     nodeId: text('node_id'),
     action: text('action').notNull(),
     actor: text('actor').notNull(),
-    detail: jsonb('detail').notNull(),
+    detail: jsonbObject('detail').notNull(),
     at: timestamp('at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index('audit_run_idx').on(table.runId)],

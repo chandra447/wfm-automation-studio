@@ -1,21 +1,21 @@
-import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
-import postgres, { type Sql } from 'postgres';
+import { SQL } from 'bun';
+import { drizzle, type BunSQLDatabase } from 'drizzle-orm/bun-sql';
 import * as schema from '../db/schema.ts';
 
 /**
- * The studio's own database: Postgres 16 over postgres.js with Drizzle for the
- * typed surface. `ensureTables` mirrors services/studio-api/src/db/schema.ts so
+ * The studio's own database: Postgres 16 over Bun's SQL client with Drizzle
+ * for the typed surface. `ensureTables` mirrors services/studio-api/src/db/schema.ts so
  * a fresh database (demo boot, CI, tests) is usable without a migration step.
  */
 export interface StudioDb {
-  sql: Sql;
-  db: PostgresJsDatabase<typeof schema>;
+  sql: SQL;
+  db: BunSQLDatabase<typeof schema>;
   close: () => Promise<void>;
 }
 
 export function connectStudioDb(url: string): StudioDb {
-  const sql = postgres(url, { max: 10, onnotice: () => {} });
-  return { sql, db: drizzle(sql, { schema }), close: () => sql.end({ timeout: 5 }) };
+  const sql = new SQL(url, { max: 10 });
+  return { sql, db: drizzle(sql, { schema }), close: () => sql.close({ timeout: 5 }) };
 }
 
 const TABLE_DDL: readonly string[] = [
@@ -125,6 +125,6 @@ const TABLE_DDL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS audit_run_idx ON audit_log (run_id)`,
 ];
 
-export async function ensureStudioTables(sql: Sql): Promise<void> {
+export async function ensureStudioTables(sql: SQL): Promise<void> {
   for (const ddl of TABLE_DDL) await sql.unsafe(ddl);
 }

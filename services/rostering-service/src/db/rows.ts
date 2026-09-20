@@ -1,9 +1,8 @@
 import type { z } from 'zod';
-import type { TransactionSql } from 'postgres';
+import type { SQL } from 'bun';
 import type { shiftStatusSchema } from '@wfm/contracts';
 
-/** Transaction handles from `sql.begin`; not interchangeable with the connection type in postgres.js typings. */
-export type Tx = TransactionSql;
+export type Tx = SQL;
 
 export type ShiftStatus = z.infer<typeof shiftStatusSchema>;
 

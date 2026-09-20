@@ -1,5 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
-import postgres from 'postgres';
+import { SQL } from 'bun';
 
 /**
  * Applies the SQL migrations in drizzle/ in lexical order, recording each one
@@ -9,7 +9,7 @@ import postgres from 'postgres';
  */
 export async function applyMigrations(databaseUrl: string): Promise<void> {
   const migrationsDir = new URL('../../drizzle/', import.meta.url);
-  const sql = postgres(databaseUrl, { max: 1, onnotice: () => {} });
+  const sql = new SQL(databaseUrl, { max: 1 });
 
   try {
     await sql`
@@ -34,7 +34,7 @@ export async function applyMigrations(databaseUrl: string): Promise<void> {
       process.stdout.write(`applied ${file}\n`);
     }
   } finally {
-    await sql.end();
+    await sql.close({ timeout: 5 });
   }
 }
 

@@ -1,4 +1,4 @@
-import postgres from 'postgres';
+import { SQL } from 'bun';
 import { ensureOutboxTable } from '@wfm/outbox';
 
 /**
@@ -114,12 +114,12 @@ const ddl = `
 `;
 
 export async function migrate(url: string): Promise<void> {
-  const sql = postgres(url, { max: 1, onnotice: () => {} });
+  const sql = new SQL(url, { max: 1 });
   try {
     await sql.unsafe(ddl);
     await ensureOutboxTable(sql);
   } finally {
-    await sql.end({ timeout: 5 });
+    await sql.close({ timeout: 5 });
   }
 }
 

@@ -1,5 +1,5 @@
 import type { Candidate, CandidateList } from '@wfm/contracts';
-import type { Sql } from 'postgres';
+import type { SQL } from 'bun';
 import type { EmployeeRow, ShiftRow } from '../db/rows.ts';
 import { NotFoundError } from './errors.ts';
 
@@ -176,7 +176,7 @@ export function rankCandidates(
 }
 
 export async function listCandidates(
-  sql: Sql,
+  sql: SQL,
   tenantId: string,
   shiftId: string,
   excludeEmployeeIds: string[] = [],
@@ -221,7 +221,7 @@ export async function listCandidates(
     WHERE tenant_id = ${tenantId} AND id <> ${shiftId} AND status <> 'cancelled'
       AND assigned_employee_id IS NOT NULL
       AND ends_at <= ${shift.startsAt}
-      AND ends_at > ${shift.startsAt} - ${`${REST_LOOKBACK_HOURS} hours`}::interval
+      AND ends_at > ${shift.startsAt}::timestamptz - ${`${REST_LOOKBACK_HOURS} hours`}::interval
     GROUP BY assigned_employee_id
   `;
 

@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gt, inArray, sql as dsql } from 'drizzle-orm';
-import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import type { BunSQLDatabase } from 'drizzle-orm/bun-sql';
 import type { Approval, RunEvent, RunStatus, RunSummary } from '@wfm/contracts';
 import * as schema from '../db/schema.ts';
 
@@ -9,7 +9,7 @@ export type ApprovalRow = typeof schema.approvals.$inferSelect;
 export type WorkflowRow = typeof schema.workflows.$inferSelect;
 export type WorkflowVersionRow = typeof schema.workflowVersions.$inferSelect;
 
-export type RunDb = PostgresJsDatabase<typeof schema>;
+export type RunDb = BunSQLDatabase<typeof schema>;
 
 export type RunEventKind =
   | 'event_received'

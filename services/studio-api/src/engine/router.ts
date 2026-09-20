@@ -4,9 +4,9 @@ import type { Logger } from 'pino';
 import * as schema from '../db/schema.ts';
 import type { Orchestrator } from './orchestrator.ts';
 import { ensureStudioTables } from './db.ts';
-import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import type { BunSQLDatabase } from 'drizzle-orm/bun-sql';
 import { eq } from 'drizzle-orm';
-import type { Sql } from 'postgres';
+import type { SQL } from 'bun';
 
 /**
  * The event router (design §7). For every tenant with an enabled workflow it
@@ -17,8 +17,8 @@ import type { Sql } from 'postgres';
  * failures land in dead_letters.
  */
 export interface RouterOptions {
-  sql: Sql;
-  db: PostgresJsDatabase<typeof schema>;
+  sql: SQL;
+  db: BunSQLDatabase<typeof schema>;
   bus: EventBus;
   orchestrator: Orchestrator;
   logger: Logger;

@@ -14,7 +14,7 @@ import {
 import { createLogger } from '@wfm/observability';
 import { Elysia } from 'elysia';
 import { z, ZodError } from 'zod';
-import type { Sql } from 'postgres';
+import type { SQL } from 'bun';
 import { listCandidates } from './domain/candidates.ts';
 import type { CommandContext } from './domain/context.ts';
 import { ForbiddenError, IdempotencyMismatchError, NotFoundError, PreconditionError } from './domain/errors.ts';
@@ -76,7 +76,7 @@ function logCommand(tenantId: string, shiftId: string, events: readonly { eventT
   );
 }
 
-export function createRosteringApp(sql: Sql) {
+export function createRosteringApp(sql: SQL) {
   return new Elysia({ name: 'rostering-service' })
     .onError(({ error, set }) => {
       if (error instanceof ActorContextError) {

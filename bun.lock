@@ -9,7 +9,6 @@
         "@wfm/contracts": "workspace:*",
         "@wfm/testkit": "workspace:*",
         "@wfm/workflows": "workspace:*",
-        "postgres": "^3.4.7",
         "typescript": "^5.9.2",
       },
     },
@@ -78,7 +77,6 @@
         "@wfm/contracts": "workspace:*",
         "@wfm/eventbus": "workspace:*",
         "@wfm/observability": "workspace:*",
-        "postgres": "^3.4.7",
       },
     },
     "packages/testkit": {
@@ -87,7 +85,6 @@
       "dependencies": {
         "@wfm/contracts": "workspace:*",
         "@wfm/eventbus": "workspace:*",
-        "postgres": "^3.4.7",
       },
     },
     "packages/workflows": {
@@ -110,7 +107,6 @@
         "drizzle-orm": "^0.44.5",
         "elysia": "^1.4.10",
         "pino": "^9.13.1",
-        "postgres": "^3.4.7",
         "zod": "^4.1.11",
       },
       "devDependencies": {
@@ -137,7 +133,6 @@
         "ioredis": "^5.8.1",
         "pg": "^8.16.3",
         "pino": "^9.13.1",
-        "postgres": "^3.4.7",
         "zod": "^4.1.11",
       },
       "devDependencies": {
@@ -156,7 +151,6 @@
         "drizzle-orm": "^0.44.5",
         "elysia": "^1.4.10",
         "pino": "^9.13.1",
-        "postgres": "^3.4.7",
         "zod": "^4.1.11",
       },
     },

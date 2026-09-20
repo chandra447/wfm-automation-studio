@@ -1,14 +1,14 @@
 import { createEventBus } from '@wfm/eventbus';
 import { ensureOutboxTable, OutboxPublisher } from '@wfm/outbox';
 import { createLogger } from '@wfm/observability';
-import postgres from 'postgres';
+import { SQL } from 'bun';
 import { createRosteringApp } from './app.ts';
 
 const logger = createLogger('rostering-service');
 const port = Number(process.env.ROSTERING_PORT ?? 4101);
 const databaseUrl = process.env.ROSTERING_DATABASE_URL ?? 'postgres://wfm:wfm@127.0.0.1:5433/rostering';
 
-const sql = postgres(databaseUrl, { onnotice: () => {} });
+const sql = new SQL(databaseUrl, { max: 10 });
 await ensureOutboxTable(sql);
 
 const publisher = new OutboxPublisher({
@@ -31,7 +31,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, async () => {
     logger.info({ signal }, 'shutting down');
     await publisher.stop();
-    await sql.end();
+    await sql.close({ timeout: 5 });
     process.exit(0);
   });
 }

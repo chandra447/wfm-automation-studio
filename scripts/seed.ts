@@ -5,7 +5,7 @@
  *   bun run scripts/seed.ts
  */
 import { demoWorkflows } from '@wfm/workflows';
-import postgres from 'postgres';
+import { SQL } from 'bun';
 
 const tenantId = process.env.DEMO_TENANT_ID ?? '11111111-1111-4111-8111-111111111111';
 const locationId = '33333333-3333-4333-8333-000000000001';
@@ -61,16 +61,11 @@ const payrollWorkflowId = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000002';
 
 const hoursFromNow = (hours: number) => new Date(Date.now() + hours * 3_600_000).toISOString();
 
-const rostering = postgres(process.env.ROSTERING_DATABASE_URL ?? 'postgres://wfm:wfm@127.0.0.1:5433/rostering', {
-  onnotice: () => {},
-});
-const attendance = postgres(
+const rostering = new SQL(process.env.ROSTERING_DATABASE_URL ?? 'postgres://wfm:wfm@127.0.0.1:5433/rostering');
+const attendance = new SQL(
   process.env.TIME_ATTENDANCE_DATABASE_URL ?? 'postgres://wfm:wfm@127.0.0.1:5433/time_attendance',
-  { onnotice: () => {} },
 );
-const studio = postgres(process.env.STUDIO_DATABASE_URL ?? 'postgres://wfm:wfm@127.0.0.1:5433/studio', {
-  onnotice: () => {},
-});
+const studio = new SQL(process.env.STUDIO_DATABASE_URL ?? 'postgres://wfm:wfm@127.0.0.1:5433/studio');
 
 async function seedRostering(): Promise<void> {
   await rostering`DELETE FROM shift_offers WHERE tenant_id = ${tenantId}`;
@@ -112,7 +107,7 @@ async function seedRostering(): Promise<void> {
       starts_at, ends_at, hourly_rate_cents, status, assigned_employee_id, baseline_cost_cents
     ) VALUES (
       ${cancelledShiftId}, ${tenantId}, ${locationId}, 'Registered Nurse',
-      ${rostering.json(['RN', 'AGED_CARE'])},
+      ${['RN', 'AGED_CARE']},
       ${hoursFromNow(7.5)}, ${hoursFromNow(15.5)}, 6200, 'published',
       ${employees[0].id}, 49600
     )
@@ -127,7 +122,7 @@ async function seedRostering(): Promise<void> {
       starts_at, ends_at, hourly_rate_cents, status, assigned_employee_id, baseline_cost_cents
     ) VALUES (
       ${completedShiftId}, ${tenantId}, ${locationId}, 'Registered Nurse',
-      ${rostering.json(['RN', 'AGED_CARE'])},
+      ${['RN', 'AGED_CARE']},
       ${hoursFromNow(-14)}, ${hoursFromNow(-5.5)}, 6400, 'assigned',
       ${employees[2].id}, 54400
     )
@@ -207,20 +202,17 @@ async function seedStudio(): Promise<void> {
       INSERT INTO workflows (workflow_id, tenant_id, name, description, enabled, draft_version_number, published_version_number)
       VALUES (${workflowId}, ${tenantId}, ${template.definition.name}, ${template.definition.description}, true, 1, 1)
     `;
-    // jsonb parameters are passed as text and cast twice: a bare $n::jsonb with
-    // a JSON string would store a jsonb string scalar, and the tagged template
-    // rejects object parameters outright.
     await studio.unsafe(
       `INSERT INTO workflow_versions (
          version_id, workflow_id, tenant_id, version_number, status, definition, layout, diagnostics, created_by
-       ) VALUES ($1, $2, $3, 1, 'published', $4::text::jsonb, $5::text::jsonb, $6::text::jsonb, 'seed')`,
+       ) VALUES ($1, $2, $3, 1, 'published', $4, $5, $6, 'seed')`,
       [
         versionId,
         workflowId,
         tenantId,
-        JSON.stringify(template.definition),
-        JSON.stringify(template.layout),
-        JSON.stringify([]),
+        template.definition,
+        template.layout,
+        [],
       ],
     );
   }
@@ -249,7 +241,7 @@ for (const target of selected) {
   process.stdout.write(`seeded ${target.name}\n`);
 }
 
-await Promise.all([rostering.end(), attendance.end(), studio.end()]);
+await Promise.all([rostering.close(), attendance.close(), studio.close()]);
 
 process.stdout.write(
   `seeded tenant ${tenantId}: ${employees.length} employees, 2 shifts, 1 timesheet, ${demoWorkflows.length} published workflows\n`,

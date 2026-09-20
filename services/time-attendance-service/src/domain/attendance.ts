@@ -53,13 +53,13 @@ type PayLineRow = typeof payLinesTable.$inferSelect;
 type ExceptionRow = typeof exceptionsTable.$inferSelect;
 
 /**
- * drizzle holds the transaction's postgres client private, but the outbox must
+ * drizzle holds the transaction's SQL client private, but the outbox must
  * enqueue into that same client; the runtime shape is stable in the pinned
  * drizzle version, so the guarded read is pinned here once.
  */
 function rawClientOf(session: unknown): Tx {
   if (typeof session !== 'object' || session === null || !('client' in session)) {
-    throw new Error('drizzle transaction session has no underlying postgres client');
+    throw new Error('drizzle transaction session has no underlying SQL client');
   }
   return session.client as Tx;
 }
@@ -214,7 +214,7 @@ const approvalResponseSchema = z.object({ timesheet: timesheetSchema });
 export function createAttendanceService({ database }: ServiceDeps): AttendanceService {
   /**
    * Runs work inside one Postgres transaction. drizzle keeps the transaction's
-   * underlying postgres client private, so the one library-boundary read lives
+   * underlying SQL client private, so the one library-boundary read lives
    * here; the outbox writes into that same client.
    */
   async function withTransaction<T>(work: (tx: ScopedTx) => Promise<T>): Promise<T> {
@@ -910,7 +910,7 @@ export function createAttendanceService({ database }: ServiceDeps): AttendanceSe
     },
 
     async close() {
-      await database.sql.end({ timeout: 5 });
+      await database.sql.close({ timeout: 5 });
     },
   };
 }

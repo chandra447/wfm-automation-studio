@@ -23,7 +23,6 @@
     "@wfm/contracts": "workspace:*",
     "@wfm/testkit": "workspace:*",
     "@wfm/workflows": "workspace:*",
-    "postgres": "^3.4.7",
     "typescript": "^5.9.2"
   }
 }

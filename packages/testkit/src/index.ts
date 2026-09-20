@@ -1,4 +1,4 @@
-import postgres from 'postgres';
+import { SQL } from 'bun';
 
 /** Fixtures shared by the seed script and the end-to-end tests. */
 export const demo = {
@@ -59,7 +59,7 @@ export interface TestDatabase {
 }
 
 export async function createTestDatabase(adminUrl: string, databaseName: string): Promise<TestDatabase> {
-  const admin = postgres(adminUrl, { max: 1, onnotice: () => {} });
+  const admin = new SQL(adminUrl, { max: 1 });
   await admin.unsafe(`DROP DATABASE IF EXISTS ${databaseName}`);
   await admin.unsafe(`CREATE DATABASE ${databaseName}`);
   const url = new URL(adminUrl);
@@ -68,7 +68,7 @@ export async function createTestDatabase(adminUrl: string, databaseName: string)
     url: url.toString(),
     drop: async () => {
       await admin.unsafe(`DROP DATABASE IF EXISTS ${databaseName} WITH (FORCE)`);
-      await admin.end({ timeout: 5 });
+      await admin.close({ timeout: 5 });
     },
   };
 }

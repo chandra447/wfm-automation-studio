@@ -30,7 +30,6 @@
     "ioredis": "^5.8.1",
     "pg": "^8.16.3",
     "pino": "^9.13.1",
-    "postgres": "^3.4.7",
     "zod": "^4.1.11"
   },
   "devDependencies": {

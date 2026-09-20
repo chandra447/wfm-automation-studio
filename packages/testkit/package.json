@@ -8,7 +8,6 @@
   },
   "dependencies": {
     "@wfm/contracts": "workspace:*",
-    "@wfm/eventbus": "workspace:*",
-    "postgres": "^3.4.7"
+    "@wfm/eventbus": "workspace:*"
   }
 }

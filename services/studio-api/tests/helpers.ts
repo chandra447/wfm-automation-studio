@@ -1,7 +1,7 @@
 import { MemorySaver, type BaseCheckpointSaver } from '@langchain/langgraph';
 import { InMemoryEventBus } from '@wfm/eventbus';
 import { createLogger } from '@wfm/observability';
-import type { Sql } from 'postgres';
+import type { SQL } from 'bun';
 import { createTestDatabase, demo, type TestDatabase } from '@wfm/testkit';
 import type { ActorContext, RunEvent, RunStatus } from '@wfm/contracts';
 import type { CandidateList, CreateOffersRequest, Shift, TimesheetDetailResponse } from '@wfm/contracts';
@@ -239,7 +239,7 @@ export interface Harness {
   proposer: Proposer;
   bus: InMemoryEventBus;
   db: RunDb;
-  sql: Sql;
+  sql: SQL;
   timeouts: Array<{ tenantId: string; runId: string; approvalId: string; runAt: Date }>;
   drop: () => Promise<void>;
 }
@@ -312,7 +312,7 @@ export async function createHarness(options?: HarnessOptions): Promise<Harness> 
     timeouts,
     databaseUrl: database.url,
     drop: async () => {
-      await sql.end({ timeout: 5 });
+      await sql.close({ timeout: 5 });
       await bus.close();
       if (options?.databaseUrl === undefined) await database.drop();
     },

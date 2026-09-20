@@ -5,12 +5,12 @@
  *   bun src/db/migrate.ts
  */
 import { readdir, readFile } from 'node:fs/promises';
-import postgres from 'postgres';
+import { SQL } from 'bun';
 
 const databaseUrl = process.env.STUDIO_DATABASE_URL ?? 'postgres://wfm:wfm@127.0.0.1:5433/studio';
 const migrationsDir = new URL('../../drizzle/', import.meta.url);
 
-const sql = postgres(databaseUrl, { max: 1, onnotice: () => {} });
+const sql = new SQL(databaseUrl, { max: 1 });
 
 await sql`
   CREATE TABLE IF NOT EXISTS _migrations (
@@ -19,7 +19,7 @@ await sql`
   )
 `;
 
-const applied = await sql<Array<{ name: string }>>`SELECT name FROM _migrations`;
+const applied: Array<{ name: string }> = await sql`SELECT name FROM _migrations`;
 const done = new Set(applied.map((row) => row.name));
 
 const files = (await readdir(migrationsDir)).filter((name) => name.endsWith('.sql')).sort();
@@ -34,5 +34,5 @@ for (const file of files) {
   process.stdout.write(`applied ${file}\n`);
 }
 
-await sql.end();
+await sql.close();
 process.stdout.write('studio migrations up to date\n');

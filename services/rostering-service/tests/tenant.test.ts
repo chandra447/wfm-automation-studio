@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import postgres from 'postgres';
+import { SQL } from 'bun';
 import { ensureOutboxTable } from '@wfm/outbox';
 import { createTestDatabase } from '@wfm/testkit';
 import { applyMigrations } from '../src/db/migrate.ts';
@@ -18,7 +18,7 @@ import {
 const otherTenantId = '22222222-2222-4222-8222-999999999999';
 const shiftId = '22222222-2222-4222-8222-000000000600';
 
-let sql: postgres.Sql;
+let sql: SQL;
 let app: AppHandle;
 let drop: () => Promise<void>;
 
@@ -28,7 +28,7 @@ beforeAll(async () => {
     `rostering_tenant_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`,
   );
   await applyMigrations(database.url);
-  sql = postgres(database.url, { onnotice: () => {} });
+  sql = new SQL(database.url, { max: 10 });
   await ensureOutboxTable(sql);
   app = createRosteringApp(sql);
   drop = database.drop;
@@ -45,7 +45,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await sql.end();
+  await sql.close({ timeout: 5 });
   await drop();
 });
 

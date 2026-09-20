@@ -7,20 +7,20 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { makeEvent, type AnyWfmEvent } from '@wfm/contracts';
 import { InMemoryEventBus } from '@wfm/eventbus';
-import postgres from 'postgres';
+import { SQL } from 'bun';
 import { enqueueEvents, ensureOutboxTable, OutboxPublisher } from '../src/index.ts';
 
 const adminUrl = process.env.ROSTERING_DATABASE_URL ?? 'postgres://wfm:wfm@127.0.0.1:5433/rostering';
 
 async function reachable(): Promise<boolean> {
-  const probe = postgres(adminUrl, { max: 1, onnotice: () => {} });
+  const probe = new SQL(adminUrl, { max: 1 });
   try {
     await probe`SELECT 1`;
     return true;
   } catch {
     return false;
   } finally {
-    await probe.end({ timeout: 2 });
+    await probe.close({ timeout: 2 });
   }
 }
 
@@ -42,16 +42,16 @@ function shiftUnfilled(): AnyWfmEvent {
 }
 
 describe.skipIf(!available)('transactional outbox', () => {
-  let sql: ReturnType<typeof postgres>;
+  let sql: SQL;
 
   beforeAll(async () => {
-    sql = postgres(adminUrl, { max: 2, onnotice: () => {} });
+    sql = new SQL(adminUrl, { max: 2 });
     await ensureOutboxTable(sql, { table });
   });
 
   afterAll(async () => {
     await sql.unsafe(`DROP TABLE IF EXISTS ${table}`);
-    await sql.end({ timeout: 5 });
+    await sql.close({ timeout: 5 });
   });
 
   test('a rolled back transaction leaves no event behind', async () => {
@@ -103,7 +103,7 @@ describe.skipIf(!available)('transactional outbox', () => {
     const poisonId = crypto.randomUUID();
     await sql`
       INSERT INTO ${sql(table)} (id, tenant_id, event_id, event_type, payload)
-      VALUES (${poisonId}, ${tenantId}, ${crypto.randomUUID()}, 'shift.cancelled', ${sql.json({ not: 'an envelope' })})
+      VALUES (${poisonId}, ${tenantId}, ${crypto.randomUUID()}, 'shift.cancelled', ${{ not: 'an envelope' }})
     `;
 
     const poisoned: Array<{ id: string; eventType: string }> = [];

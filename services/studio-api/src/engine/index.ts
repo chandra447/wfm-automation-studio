@@ -25,7 +25,7 @@ import {
   type WorkflowDefinition,
 } from '@wfm/workflows';
 import type { Logger } from 'pino';
-import type { Sql } from 'postgres';
+import type { SQL } from 'bun';
 import * as schema from '../db/schema.ts';
 import { ApprovalService } from './approvals.ts';
 import { connectStudioDb, ensureStudioTables } from './db.ts';
@@ -68,7 +68,7 @@ import { createProposer, type Proposer } from './nodes/proposers.ts';
  */
 
 export interface EngineContext {
-  sql: Sql;
+  sql: SQL;
   db: RunDb;
   bus: EventBus;
   clients: DomainClients;

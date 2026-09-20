@@ -1,4 +1,4 @@
-import postgres from 'postgres';
+import { SQL } from 'bun';
 import { ensureOutboxTable } from '@wfm/outbox';
 import { createTestDatabase, demo } from '@wfm/testkit';
 import { createRosteringApp } from '../src/app.ts';
@@ -18,7 +18,7 @@ export interface AppHandle {
 }
 
 export interface TestHarness {
-  sql: postgres.Sql;
+  sql: SQL;
   app: AppHandle;
   tenantId: string;
   locationId: string;
@@ -31,7 +31,7 @@ export async function createRosteringHarness(databaseLabel: string): Promise<Tes
     `rostering_${databaseLabel}_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`,
   );
   await applyMigrations(database.url);
-  const sql = postgres(database.url, { onnotice: () => {} });
+  const sql = new SQL(database.url, { max: 10 });
   await ensureOutboxTable(sql);
   const app = createRosteringApp(sql);
   return {
@@ -40,7 +40,7 @@ export async function createRosteringHarness(databaseLabel: string): Promise<Tes
     tenantId: TENANT_ID,
     locationId: LOCATION_ID,
     drop: async () => {
-      await sql.end();
+      await sql.close({ timeout: 5 });
       await database.drop();
     },
   };
@@ -54,7 +54,7 @@ interface SeedEmployee {
   weeklyHours: number;
 }
 
-export async function seedEmployee(sql: postgres.Sql, employee: SeedEmployee): Promise<void> {
+export async function seedEmployee(sql: SQL, employee: SeedEmployee): Promise<void> {
   const email = `${employee.name.toLowerCase().replaceAll(' ', '.')}@demo.test`;
   await sql`
     INSERT INTO employees (id, tenant_id, name, email, hourly_rate_cents, weekly_hours)
@@ -86,14 +86,14 @@ export interface SeedShift {
   baselineCostCents?: number;
 }
 
-export async function seedShift(sql: postgres.Sql, shift: SeedShift): Promise<void> {
+export async function seedShift(sql: SQL, shift: SeedShift): Promise<void> {
   await sql`
     INSERT INTO shifts (
       id, tenant_id, location_id, role_name, required_qualification_codes,
       starts_at, ends_at, hourly_rate_cents, status, assigned_employee_id, baseline_cost_cents
     ) VALUES (
       ${shift.id}, ${TENANT_ID}, ${LOCATION_ID}, ${shift.roleName ?? 'Registered Nurse'},
-      ${sql.json(shift.requiredQualificationCodes ?? ['RN', 'AGED_CARE'])},
+      ${shift.requiredQualificationCodes ?? ['RN', 'AGED_CARE']},
       ${shift.startsAt}, ${shift.endsAt}, ${shift.hourlyRateCents ?? 6200},
       ${shift.status ?? 'published'}, ${shift.assignedEmployeeId ?? null},
       ${shift.baselineCostCents ?? 49600}
@@ -101,7 +101,7 @@ export async function seedShift(sql: postgres.Sql, shift: SeedShift): Promise<vo
   `;
 }
 
-export async function seedLocation(sql: postgres.Sql): Promise<void> {
+export async function seedLocation(sql: SQL): Promise<void> {
   await sql`
     INSERT INTO locations (id, tenant_id, name, timezone)
     VALUES (${LOCATION_ID}, ${TENANT_ID}, ${demo.location.name}, 'Australia/Melbourne')
@@ -128,7 +128,7 @@ export async function jsonOf<T>(response: Response): Promise<T> {
 }
 
 export async function outboxEvents(
-  sql: postgres.Sql,
+  sql: SQL,
   eventType: string,
   tenantId = TENANT_ID,
 ): Promise<Array<{ payload: { payload: Record<string, unknown>; eventType: string; correlationId: string; actor: unknown } }>> {

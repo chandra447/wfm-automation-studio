@@ -5,7 +5,7 @@ import {
   type Shift,
   type ShiftListQuery,
 } from '@wfm/contracts';
-import type { Sql } from 'postgres';
+import type { SQL } from 'bun';
 import type { OfferRow, ShiftRow, Tx } from '../db/rows.ts';
 import { eventContextOf, type CommandContext } from './context.ts';
 import { ForbiddenError, NotFoundError, PreconditionError } from './errors.ts';
@@ -48,7 +48,7 @@ function shiftDto(row: ShiftRow): Shift {
   };
 }
 
-async function loadShift(tx: Sql | Tx, tenantId: string, shiftId: string): Promise<ShiftRow> {
+async function loadShift(tx: SQL, tenantId: string, shiftId: string): Promise<ShiftRow> {
   const rows = await tx<ShiftRow[]>`
     SELECT s.id, s.tenant_id AS "tenantId", s.location_id AS "locationId", l.name AS "locationName",
            l.timezone AS "timeZone", s.role_name AS "roleName",
@@ -64,7 +64,7 @@ async function loadShift(tx: Sql | Tx, tenantId: string, shiftId: string): Promi
   return shift;
 }
 
-export async function getShift(sql: Sql, tenantId: string, shiftId: string): Promise<Shift | null> {
+export async function getShift(sql: SQL, tenantId: string, shiftId: string): Promise<Shift | null> {
   const rows = await sql<ShiftRow[]>`
     SELECT s.id, s.tenant_id AS "tenantId", s.location_id AS "locationId", l.name AS "locationName",
            l.timezone AS "timeZone", s.role_name AS "roleName",
@@ -78,7 +78,7 @@ export async function getShift(sql: Sql, tenantId: string, shiftId: string): Pro
   return rows[0] ? shiftDto(rows[0]) : null;
 }
 
-export async function listShifts(sql: Sql, tenantId: string, query: ShiftListQuery): Promise<Shift[]> {
+export async function listShifts(sql: SQL, tenantId: string, query: ShiftListQuery): Promise<Shift[]> {
   const conditions = [sql`s.tenant_id = ${tenantId}`];
   if (query.locationId !== undefined) conditions.push(sql`s.location_id = ${query.locationId}`);
   if (query.from !== undefined) conditions.push(sql`s.starts_at >= ${query.from}`);
@@ -101,7 +101,7 @@ export async function listShifts(sql: Sql, tenantId: string, query: ShiftListQue
   return rows.map(shiftDto);
 }
 
-export async function listShiftOffers(sql: Sql, tenantId: string, shiftId: string): Promise<OffersDetail> {
+export async function listShiftOffers(sql: SQL, tenantId: string, shiftId: string): Promise<OffersDetail> {
   await loadShift(sql, tenantId, shiftId);
   const rows = await sql<OfferRow[]>`
     SELECT id, tenant_id AS "tenantId", shift_id AS "shiftId", employee_id AS "employeeId",
@@ -123,7 +123,7 @@ export async function listShiftOffers(sql: Sql, tenantId: string, shiftId: strin
 
 async function assertEmployeesExist(tx: Tx, tenantId: string, employeeIds: string[]): Promise<void> {
   const known = await tx<Array<{ id: string }>>`
-    SELECT id FROM employees WHERE tenant_id = ${tenantId} AND id = ANY(${employeeIds})
+    SELECT id FROM employees WHERE tenant_id = ${tenantId} AND id = ANY(${tx.array(employeeIds, 'uuid[]')})
   `;
   if (known.length !== employeeIds.length) {
     const missing = employeeIds.filter((id) => !known.some((row) => row.id === id));
@@ -132,7 +132,7 @@ async function assertEmployeesExist(tx: Tx, tenantId: string, employeeIds: strin
 }
 
 export async function sendOffers(
-  sql: Sql,
+  sql: SQL,
   ctx: CommandContext,
   shiftId: string,
   body: { employeeIds: string[]; expiresAt: string; reason: string },
@@ -150,7 +150,7 @@ export async function sendOffers(
     await tx`
       INSERT INTO shift_offers (id, tenant_id, shift_id, employee_id, status, expires_at)
       SELECT gen_random_uuid(), ${ctx.tenantId}, ${shiftId}, x.employee_id, 'sent', ${body.expiresAt}
-      FROM unnest(${employeeIds}::uuid[]) AS x(employee_id)
+      FROM unnest(${sql.array(employeeIds, 'uuid[]')}) AS x(employee_id)
       ON CONFLICT (shift_id, employee_id) DO NOTHING
     `;
 
@@ -185,7 +185,7 @@ export async function sendOffers(
 }
 
 export async function assignShift(
-  sql: Sql,
+  sql: SQL,
   ctx: CommandContext,
   shiftId: string,
   body: { employeeId: string; reason: string },
@@ -214,7 +214,7 @@ export async function assignShift(
 }
 
 export async function cancelShift(
-  sql: Sql,
+  sql: SQL,
   ctx: CommandContext,
   shiftId: string,
   body: { reason: string; cancelledByEmployeeId?: string | undefined },
@@ -260,7 +260,7 @@ export async function cancelShift(
 }
 
 export async function acceptOffer(
-  sql: Sql,
+  sql: SQL,
   ctx: CommandContext,
   shiftId: string,
   body: { employeeId: string; offerId: string },
@@ -300,7 +300,7 @@ export async function acceptOffer(
 }
 
 export async function publishShift(
-  sql: Sql,
+  sql: SQL,
   ctx: CommandContext,
   shiftId: string,
   idempotencyKey: string | undefined,
@@ -335,7 +335,7 @@ export async function publishShift(
 }
 
 export async function requestSwap(
-  sql: Sql,
+  sql: SQL,
   ctx: CommandContext,
   shiftId: string,
   body: SwapRequestBody,

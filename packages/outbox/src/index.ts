@@ -1,6 +1,6 @@
 import { parseEvent, type AnyWfmEvent } from '@wfm/contracts';
 import type { EventBus } from '@wfm/eventbus';
-import type { Sql } from 'postgres';
+import type { SQL } from 'bun';
 
 /**
  * Transactional outbox (ADR-0007). The service writes its domain row and the
@@ -14,7 +14,7 @@ export interface OutboxOptions {
 }
 
 export interface OutboxPublisherOptions extends OutboxOptions {
-  sql: Sql;
+  sql: SQL;
   bus: EventBus;
   pollMs?: number;
   batchSize?: number;
@@ -26,7 +26,7 @@ export interface OutboxPublisherOptions extends OutboxOptions {
   onError?: (error: unknown, event: AnyWfmEvent | null) => void;
 }
 
-export async function ensureOutboxTable(sql: Sql, options: OutboxOptions = {}): Promise<void> {
+export async function ensureOutboxTable(sql: SQL, options: OutboxOptions = {}): Promise<void> {
   const table = options.table ?? 'outbox';
   await sql.unsafe(`
     CREATE TABLE IF NOT EXISTS ${table} (
@@ -51,12 +51,12 @@ export async function ensureOutboxTable(sql: Sql, options: OutboxOptions = {}): 
 }
 
 /**
- * The minimum a caller must provide to enqueue: postgres.js's `unsafe`. Both
- * `Sql` and `TransactionSql` satisfy it structurally, which is what lets a
+ * The minimum a caller must provide to enqueue: Bun's `unsafe`. Both
+ * `SQL` and `TransactionSQL` satisfy it structurally, which is what lets a
  * service pass the transaction it is already inside without a cast.
  */
 export interface OutboxExecutor {
-  unsafe: Sql['unsafe'];
+  unsafe: SQL['unsafe'];
 }
 
 /**
@@ -81,7 +81,7 @@ export async function enqueueEvents(
 }
 
 export class OutboxPublisher {
-  readonly #sql: Sql;
+  readonly #sql: SQL;
   readonly #bus: EventBus;
   readonly #table: string;
   readonly #pollMs: number;
