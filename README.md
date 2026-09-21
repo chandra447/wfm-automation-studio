@@ -9,6 +9,10 @@ deterministic policy constrains, a human decides, and the domain service perform
 Built as a portfolio demo for a Senior Software Engineer (Automation & AI) role. Inspired by the
 public Humanforce domain model, and not affiliated with Humanforce.
 
+**[Watch the 25-second demo](docs/brag.mp4)**: the canvas assembling, the agent building a workflow
+through the chat, and the validator refusing to publish one that moves pay without a human in the
+path.
+
 | | |
 |---|---|
 | `scripts/verify.sh` | infra, migrations, seed, typecheck, four services, 8 end-to-end scenarios. **All properties verified.** |

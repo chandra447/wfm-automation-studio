@@ -7,3 +7,6 @@ dist/
 .DS_Store
 coverage/
 .verify/
+
+# The brag video is built here; only the rendered mp4 is committed, as docs/brag.mp4.
+brag-output/
